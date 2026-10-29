@@ -359,7 +359,8 @@ through npm's trusted publishing: no token, and with provenance.
   package that isn't private still isn't for npm, as Parity's desktop app isn't.
 - **Only versions the registry doesn't have,** asked of npm or the package's `publishConfig.registry`. A run that failed
   or never ran is caught up by the next, and a run with nothing new asks for no approval.
-- **Publicly,** as provenance needs, so the registry is asked without credentials.
+- **Publicly,** as provenance needs, so the registry is asked without credentials, and a package whose
+  `publishConfig.access` is `restricted` is left out.
 - **Dependencies first:** a package is published after the workspace packages it depends on, of any kind.
 - **Built first:** `build-command` builds the workspace, or by default each package being published and the workspace
   packages it depends on run their `build` scripts, where they have one.
@@ -382,7 +383,9 @@ only takes a trusted publisher for a package that exists, so a package's first v
 | `toolchain`              | `auto`  | As the setup action takes it.                                                      |
 | `dry-run`                | `false` | Find, build and pack the packages without publishing.                              |
 
-Output: `packages`, those published, or that a dry run would publish, as a JSON array of `name`, `version` and `path`.
+Outputs: `packages`, those to publish, or that a dry run would, as a JSON array of `name`, `version` and `path` in the
+order they're published; and `published`, `true` once they're published, and `false` when there was nothing to publish,
+in a dry run, or when the run skipped.
 
 Secrets: none. Permissions: `contents: read` and `id-token: write`, which the calling job grants, a dry run's too.
 

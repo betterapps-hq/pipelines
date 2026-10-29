@@ -190,6 +190,8 @@ importers:
 
   packages/left-pad: {}
 
+  packages/restricted: {}
+
 packages:
 
   '@babel/code-frame@7.29.7':

@@ -147,16 +147,19 @@ jobs:
           PULL_REQUEST: ${{ needs.release-prepare.outputs.pull-request }}
           WITH_CONFIG: ${{ needs.cd-npm-publish.outputs.packages }}
           PUBLIC: ${{ needs.cd-npm-publish-public.outputs.packages }}
+          PUBLISHED: ${{ needs.cd-npm-publish.outputs.published }} ${{ needs.cd-npm-publish-public.outputs.published }}
         run: |
           set -x
           test "$TITLE" = "chore(release): @pipelines-example/app@1.0.1 and 2 more"
           test "$(jq -r 'map("\(.name)@\(.from)->\(.to)") | join(" ")' <<< "$BUMPED")" = \
             "@pipelines-example/app@1.0.0->1.0.1 @pipelines-example/cli@1.0.0->1.0.1 @pipelines-example/core@1.0.0->1.1.0"
           test -z "$PULL_REQUEST"
-          # In dependency order: core before what depends on it. left-pad is left out, as npm has its version.
+          # In dependency order: core before what depends on it. left-pad is left out, as npm has its version, and the
+          # restricted package, as provenance needs public ones.
           test "$(jq -r 'map(.name) | join(" ")' <<< "$WITH_CONFIG")" = "@pipelines-example/core @pipelines-example/cli"
           test "$(jq -r 'map(.name) | join(" ")' <<< "$PUBLIC")" = \
             "@pipelines-example/core @pipelines-example/app @pipelines-example/cli"
+          test "$PUBLISHED" = "false false"
 
   terraform:
     name: Validate the Terraform modules

@@ -40,9 +40,14 @@ on:
     outputs:
       packages:
         description: >-
-          The packages published, or that a dry run would publish, in the order they're published: a JSON array of name,
-          version and path from the repository's root.
+          The packages to publish, in the order they're published: a JSON array of name, version and path from the
+          repository's root. A dry run lists what it would publish.
         value: ${{ jobs.select.outputs.packages }}
+      published:
+        description: >-
+          true when those packages were published; false when there was nothing to publish, in a dry run, or when the
+          run skipped.
+        value: ${{ jobs.publish.outputs.published || 'false' }}
 
 permissions:
   contents: read
@@ -144,6 +149,7 @@ jobs:
 
           async function notPublished(manifest) {
             if (manifest.private) return "it's private"
+            if (manifest.publishConfig?.access === "restricted") return "its publishConfig.access is restricted"
             if (manifest.beachball?.shouldPublish === false) return "Beachball's shouldPublish is false"
             if (!manifest.version) return "it has no version"
             if (env.REQUIRE_PUBLISH_CONFIG === "true" && !manifest.publishConfig) return "it has no publishConfig"
@@ -203,6 +209,8 @@ jobs:
       # npm's trusted publishing exchanges the run's OIDC token for a short-lived one, and provenance is signed with it.
       id-token: write
     # Publishes queue rather than cancel, so one is never cut off between two packages.
+    outputs:
+      published: ${{ steps.publish.outcome == 'success' }}
     concurrency:
       group: cd-npm-publish-${{ inputs.working-directory }}
       cancel-in-progress: false
@@ -243,6 +251,7 @@ jobs:
       # pnpm publishes in dependency order, and skips a version npm got since the select job looked. Provenance needs
       # public packages.
       - if: steps.current.outputs.current == 'true'
+        id: publish
         name: Publish with provenance
         env:
           PACKAGES: ${{ needs.select.outputs.packages }}
