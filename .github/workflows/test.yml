@@ -68,9 +68,9 @@ jobs:
         include:
           - example: pnpm
             verify: pnpm verify
-          # Verifying through vp run leaves a task cache for the template to save.
+          # Verified twice through the task cache, so the second run replays it and there's a cache to save.
           - example: vite-plus
-            verify: vp run verify && test -d node_modules/.vite/task-cache
+            verify: vp run --cache verify && vp run --cache verify 2>&1 | grep "2/2 cache hit"
     uses: ./.github/workflows/ci-verify.yml
     with:
       os: '["ubuntu-latest", "windows-latest", "macos-latest"]'

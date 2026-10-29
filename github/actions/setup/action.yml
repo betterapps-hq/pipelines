@@ -48,16 +48,22 @@ runs:
         fetch-depth: ${{ inputs.fetch-depth }}
         persist-credentials: false
 
-    # LFS objects are cached by the list of them, so they're downloaded only when one changes. Git hashes the list,
-    # since every system has it, and the cache is wherever the checkout's Git directory is.
+    # LFS objects are cached by the list of them and the fetch filters, so they're downloaded only when one changes.
+    # Git hashes them, since every system has it. The cache is where Git LFS keeps its objects, which it reports, and
+    # its filters are set up in the checkout so the pull replaces the pointers.
     - if: inputs.lfs == 'true'
       id: lfs
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        hash=$(git lfs ls-files --long | cut -d ' ' -f1 | sort | git hash-object --stdin)
+        git lfs install --local
+        hash=$({
+          git lfs ls-files --long | cut -d ' ' -f1 | sort
+          git config --get-all lfs.fetchinclude || true
+          git config --get-all lfs.fetchexclude || true
+        } | git hash-object --stdin)
         echo "hash=$hash" >> "$GITHUB_OUTPUT"
-        echo "path=$(git rev-parse --absolute-git-dir)/lfs" >> "$GITHUB_OUTPUT"
+        echo "path=$(git lfs env | sed -n 's/^LocalMediaDir=//p')" >> "$GITHUB_OUTPUT"
     - if: inputs.lfs == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:

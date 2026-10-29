@@ -57,7 +57,7 @@ on:
         type: string
         default: ""
       node-options:
-        description: NODE_OPTIONS for every step, such as --max-old-space-size=8192.
+        description: NODE_OPTIONS for prepare and the command, such as --max-old-space-size=8192.
         type: string
         default: ""
       vite-task-cache:
@@ -96,9 +96,6 @@ jobs:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
-    # GitHub won't take NODE_OPTIONS through GITHUB_ENV, so it's set for the job instead. Empty is the same as unset.
-    env:
-      NODE_OPTIONS: ${{ inputs.node-options }}
     steps:
       # Before checking out, so the install sees them; the working directory doesn't exist yet.
       - if: inputs.env != ''
@@ -141,21 +138,26 @@ jobs:
             vite-task-${{ runner.os }}-${{ runner.arch }}-${{ inputs.working-directory }}-${{ github.run_id }}-${{
             github.run_attempt }}
           restore-keys: vite-task-${{ runner.os }}-${{ runner.arch }}-${{ inputs.working-directory }}-
-      # Turborepo's secrets reach only these two steps, never the install and its scripts. One that isn't passed is
-      # unset rather than empty, which Turborepo would try to use.
+      # The caller's scripts come through env and run in this shell. Only they get Turborepo's secrets, never the
+      # install and its scripts, and NODE_OPTIONS, which would also reach the actions above; GitHub won't take it through
+      # GITHUB_ENV anyway. Each one that's empty is unset, since Turborepo would try to use an empty token.
       - if: inputs.prepare != ''
         env:
+          CI_VERIFY_SCRIPT: ${{ inputs.prepare }}
+          NODE_OPTIONS: ${{ inputs.node-options }}
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
         run: |
-          for name in TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do [ -n "${!name}" ] || unset "$name"; done
-          ${{ inputs.prepare }}
+          for name in NODE_OPTIONS TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do [ -n "${!name}" ] || unset "$name"; done
+          eval "$CI_VERIFY_SCRIPT"
       - env:
+          CI_VERIFY_SCRIPT: ${{ inputs.command }}
+          NODE_OPTIONS: ${{ inputs.node-options }}
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
         run: |
-          for name in TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do [ -n "${!name}" ] || unset "$name"; done
-          ${{ inputs.command }}
+          for name in NODE_OPTIONS TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do [ -n "${!name}" ] || unset "$name"; done
+          eval "$CI_VERIFY_SCRIPT"
       - if: inputs.vite-task-cache && success()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

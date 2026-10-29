@@ -65,7 +65,7 @@ before it.
 | `cancel-in-progress` | `true`              | Cancel an older run on the same branch or pull request.                                 |
 | `concurrency-key`    | (empty)             | What runs are grouped by in place of the branch or pull request, such as the run's ID.  |
 | `env`                | (empty)             | `NAME=value` lines set before the install, for every step. Not for secrets.             |
-| `node-options`       | (empty)             | `NODE_OPTIONS` for every step, such as `--max-old-space-size=8192`.                     |
+| `node-options`       | (empty)             | `NODE_OPTIONS` for `prepare` and `command`, such as `--max-old-space-size=8192`.        |
 | `vite-task-cache`    | `false`             | Keep Vite+'s task cache between runs, restored from the newest. Only `vp run` uses it.  |
 
 | Secret                             | What it's for                                                                    |
@@ -79,9 +79,10 @@ Permissions: `contents: read`.
 - **Commands run in bash on every system,** Windows included.
 - **`env` is for settings the install needs,** such as `PNPM_CONFIG_REGISTRY` when a committed `.npmrc` points at a
   registry CI can't reach. A caller's own workflow-level `env` doesn't reach a reusable workflow. GitHub won't set
-  `NODE_OPTIONS` this way, so it has an input of its own.
-- **`vite-task-cache` helps only commands that run tasks with `vp run`,** such as `vp run verify`. `vp check` or
-  `pnpm verify` run directly don't use Vite+'s task cache.
+  `NODE_OPTIONS` this way, so it has an input of its own, which reaches only the caller's scripts.
+- **`vite-task-cache` helps only tasks run with `vp run` that cache:** those defined in `vite.config.ts`, and
+  `package.json` scripts run with `--cache`, such as `vp run --cache verify`. `vp check` or `pnpm verify` run directly
+  don't use Vite+'s task cache.
 - **`concurrency-key`** changes what a newer run cancels. `${{ github.event.pull_request.number || github.run_id }}`
   keeps cancelling superseded pull request runs while runs on `main` never wait on each other.
 - **Its checks are named `<calling job> / Verify (<runner>)`.** Where a branch rule or other automation requires a check
