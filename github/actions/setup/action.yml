@@ -48,19 +48,25 @@ runs:
         fetch-depth: ${{ inputs.fetch-depth }}
         persist-credentials: false
 
-    # LFS objects are cached by the list of them, so they're downloaded only when one changes.
+    # LFS objects are cached by the list of them, so they're downloaded only when one changes. Git hashes the list,
+    # since every system has it, and the cache is wherever the checkout's Git directory is.
     - if: inputs.lfs == 'true'
       id: lfs
       shell: bash
-      run: echo "hash=$(git lfs ls-files --long | cut -d ' ' -f1 | sort | sha256sum | cut -c1-64)" >> "$GITHUB_OUTPUT"
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        hash=$(git lfs ls-files --long | cut -d ' ' -f1 | sort | git hash-object --stdin)
+        echo "hash=$hash" >> "$GITHUB_OUTPUT"
+        echo "path=$(git rev-parse --absolute-git-dir)/lfs" >> "$GITHUB_OUTPUT"
     - if: inputs.lfs == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: .git/lfs
+        path: ${{ steps.lfs.outputs.path }}
         key: lfs-${{ runner.os }}-${{ steps.lfs.outputs.hash }}
         restore-keys: lfs-${{ runner.os }}-
     - if: inputs.lfs == 'true'
       shell: bash
+      working-directory: ${{ inputs.working-directory }}
       run: git lfs pull
 
     - id: toolchain
@@ -100,8 +106,9 @@ runs:
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version-file: ${{ inputs.working-directory }}/.nvmrc
-        # A job that doesn't install has no store to restore or save.
+        # A job that doesn't install has no store to restore or save, and setup-node mustn't guess a cache of its own.
         cache: ${{ inputs.install == 'true' && 'pnpm' || '' }}
+        package-manager-cache: false
         cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
     - if: steps.toolchain.outputs.toolchain == 'pnpm' && inputs.install == 'true'
       shell: bash

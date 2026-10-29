@@ -53,16 +53,22 @@ on:
       env:
         description: >-
           Environment variables for every step, the install included, as NAME=value lines, such as a registry that
-          overrides .npmrc. Not for secrets.
+          overrides .npmrc. Not for secrets, and not NODE_OPTIONS, which GitHub won't set this way.
+        type: string
+        default: ""
+      node-options:
+        description: NODE_OPTIONS for every step, such as --max-old-space-size=8192.
         type: string
         default: ""
       vite-task-cache:
-        description: Keep Vite+'s task cache between runs, restored from the newest one. Helps commands run with vp run.
+        description: >-
+          Keep Vite+'s task cache between runs, restored from the newest one. Only tasks run with vp run use it.
         type: boolean
         default: false
     secrets:
       TURBO_TOKEN:
-        description: Turborepo's remote cache token. TURBO_API and TURBO_TEAM go through env with it.
+        description:
+          Turborepo's remote cache token, for prepare and the command. TURBO_API and TURBO_TEAM go through env.
         required: false
       TURBO_REMOTE_CACHE_SIGNATURE_KEY:
         description: The key Turborepo signs and checks remote cache artifacts with, when the cache requires it.
@@ -90,14 +96,15 @@ jobs:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
+    # GitHub won't take NODE_OPTIONS through GITHUB_ENV, so it's set for the job instead. Empty is the same as unset.
+    env:
+      NODE_OPTIONS: ${{ inputs.node-options }}
     steps:
-      # Before checking out, so the install sees them; the working directory doesn't exist yet. It always runs, since
-      # a step's if can't read secrets. Secrets that are set join the environment; GitHub keeps them masked.
-      - working-directory: .
+      # Before checking out, so the install sees them; the working directory doesn't exist yet.
+      - if: inputs.env != ''
+        working-directory: .
         env:
           LINES: ${{ inputs.env }}
-          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
-          TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
         run: |
           while IFS= read -r line; do
             [ -z "${line//[[:space:]]/}" ] && continue
@@ -105,11 +112,12 @@ jobs:
               echo "::error::env takes NAME=value lines; this one isn't: ${line%%=*}"
               exit 1
             fi
+            if [ "${line%%=*}" = NODE_OPTIONS ]; then
+              echo "::error::GitHub won't set NODE_OPTIONS through env; pass it as node-options."
+              exit 1
+            fi
             echo "$line" >> "$GITHUB_ENV"
           done <<< "$LINES"
-          for name in TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do
-            if [ -n "${!name}" ]; then echo "$name=${!name}" >> "$GITHUB_ENV"; fi
-          done
 
       # A reusable workflow's ./ is the caller's repository, so it names its own actions in full, pinned to a release's
       # commit, which Dependabot moves.
@@ -133,9 +141,21 @@ jobs:
             vite-task-${{ runner.os }}-${{ runner.arch }}-${{ inputs.working-directory }}-${{ github.run_id }}-${{
             github.run_attempt }}
           restore-keys: vite-task-${{ runner.os }}-${{ runner.arch }}-${{ inputs.working-directory }}-
+      # Turborepo's secrets reach only these two steps, never the install and its scripts. One that isn't passed is
+      # unset rather than empty, which Turborepo would try to use.
       - if: inputs.prepare != ''
-        run: ${{ inputs.prepare }}
-      - run: ${{ inputs.command }}
+        env:
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+        run: |
+          for name in TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do [ -n "${!name}" ] || unset "$name"; done
+          ${{ inputs.prepare }}
+      - env:
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+        run: |
+          for name in TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do [ -n "${!name}" ] || unset "$name"; done
+          ${{ inputs.command }}
       - if: inputs.vite-task-cache && success()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

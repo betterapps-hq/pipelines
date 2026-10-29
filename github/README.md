@@ -65,18 +65,23 @@ before it.
 | `cancel-in-progress` | `true`              | Cancel an older run on the same branch or pull request.                                 |
 | `concurrency-key`    | (empty)             | What runs are grouped by in place of the branch or pull request, such as the run's ID.  |
 | `env`                | (empty)             | `NAME=value` lines set before the install, for every step. Not for secrets.             |
-| `vite-task-cache`    | `false`             | Keep Vite+'s task cache between runs, restored from the newest.                         |
+| `node-options`       | (empty)             | `NODE_OPTIONS` for every step, such as `--max-old-space-size=8192`.                     |
+| `vite-task-cache`    | `false`             | Keep Vite+'s task cache between runs, restored from the newest. Only `vp run` uses it.  |
 
 | Secret                             | What it's for                                                                    |
 | ---------------------------------- | -------------------------------------------------------------------------------- |
 | `TURBO_TOKEN`                      | Turborepo's remote cache, with `TURBO_API` and `TURBO_TEAM` passed through `env` |
 | `TURBO_REMOTE_CACHE_SIGNATURE_KEY` | Signs and checks the remote cache's artifacts, where the cache requires it       |
 
-Both are optional, passed by name. Permissions: `contents: read`.
+Both are optional, passed by name, and reach only `prepare` and `command`, never the install and its scripts.
+Permissions: `contents: read`.
 
 - **Commands run in bash on every system,** Windows included.
 - **`env` is for settings the install needs,** such as `PNPM_CONFIG_REGISTRY` when a committed `.npmrc` points at a
-  registry CI can't reach. A caller's own workflow-level `env` doesn't reach a reusable workflow.
+  registry CI can't reach. A caller's own workflow-level `env` doesn't reach a reusable workflow. GitHub won't set
+  `NODE_OPTIONS` this way, so it has an input of its own.
+- **`vite-task-cache` helps only commands that run tasks with `vp run`,** such as `vp run verify`. `vp check` or
+  `pnpm verify` run directly don't use Vite+'s task cache.
 - **`concurrency-key`** changes what a newer run cancels. `${{ github.event.pull_request.number || github.run_id }}`
   keeps cancelling superseded pull request runs while runs on `main` never wait on each other.
 - **Its checks are named `<calling job> / Verify (<runner>)`.** Where a branch rule or other automation requires a check

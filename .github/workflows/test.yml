@@ -65,19 +65,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [pnpm, vite-plus]
+        include:
+          - example: pnpm
+            verify: pnpm verify
+          # Verifying through vp run leaves a task cache for the template to save.
+          - example: vite-plus
+            verify: vp run verify && test -d node_modules/.vite/task-cache
     uses: ./.github/workflows/ci-verify.yml
     with:
       os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
       working-directory: examples/${{ matrix.example }}
       env: |
         EXAMPLE_ENV=reached the install and every step
+      node-options: --max-old-space-size=4096
       concurrency-key: test-${{ github.ref }}
       vite-task-cache: ${{ matrix.example == 'vite-plus' }}
       prepare: echo prepared > prepared.txt
       cache-path: examples/${{ matrix.example }}/prepared.txt
       cache-key-files: examples/${{ matrix.example }}/package.json
-      command: test "$EXAMPLE_ENV" = "reached the install and every step" && test -f prepared.txt && pnpm verify
+      command: |
+        test "$EXAMPLE_ENV" = "reached the install and every step"
+        test "$NODE_OPTIONS" = --max-old-space-size=4096
+        test -f prepared.txt
+        ${{ matrix.verify }}
 
   # Nothing here is set up to publish to, so these check the templates skip with a notice rather than fail. The test
   # environment exists only for that.
