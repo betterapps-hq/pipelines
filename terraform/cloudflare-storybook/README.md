@@ -152,11 +152,11 @@ terraform {
 provider "cloudflare" {}
 
 provider "github" {
-  owner = "Fencing-Club"
+  owner = "betterapps-hq"
 }
 
 module "storybook" {
-  source = "git::https://github.com/Fencing-Club/pipelines.git//terraform/cloudflare-storybook?ref=<sha>" # v1.1.0
+  source = "git::https://github.com/betterapps-hq/pipelines.git//terraform/cloudflare-storybook?ref=<sha>" # v1.1.0
 
   account_id  = "<account id>"
   repository  = "parity"

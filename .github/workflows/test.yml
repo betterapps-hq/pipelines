@@ -26,6 +26,10 @@ jobs:
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
+      # Tests pass is the one check main requires, so a job it doesn't wait on could fail and still merge.
+      - name: Check Tests pass waits on every job
+        run: |
+          diff <(yq '.jobs | keys | .[]' .github/workflows/test.yml | grep -vx tests-pass | sort)             <(yq '.jobs["tests-pass"].needs[]' .github/workflows/test.yml | sort)
 
   setup:
     name: setup (${{ matrix.example }}, ${{ matrix.os }})
@@ -121,3 +125,15 @@ jobs:
   verify:
     name: verify (this repository)
     uses: ./.github/workflows/ci-verify.yml
+
+  # The one check main's ruleset requires, so adding or renaming a job never means changing the ruleset.
+  tests-pass:
+    name: Tests pass
+    if: always()
+    needs:
+      [lint, setup, ci-verify, publish-storybook, publish-storybook-skipped, unpublish-storybook, terraform, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "Every test passed."

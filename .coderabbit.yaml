@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Reviews hold changes to this repository's rules, which README.md sets out.
+language: en-US
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: ".github/workflows/**"
+      instructions: >-
+        Reusable workflows are called by many repositories, so check for changes that break callers: renamed or removed
+        inputs, outputs and secrets, and changed defaults. Third-party actions must be pinned by full commit SHA with
+        the version in a comment. In a reusable workflow, this repository's own actions are named in full and pinned to
+        a release's commit, never with ./ (which is the caller's repository) and never a moving tag such as v1. Only
+        test.yml may use ./, where a job tests the action from the commit it checked out. Secrets are passed by name,
+        never secrets: inherit. Each job asks for the least permissions it needs. Inputs reach shell scripts through
+        env, not by expanding ${{ }} inside run. Templates skip with a notice, rather than fail, when the settings
+        Terraform writes don't exist yet.
+    - path: "github/actions/**"
+      instructions: >-
+        Composite actions run in every caller's jobs on Ubuntu, Windows and macOS. Check that shell steps name bash and
+        work in Git Bash on Windows, that third-party actions are pinned by full commit SHA, and that checkouts keep no
+        credentials.
+    - path: "terraform/**"
+      instructions: >-
+        Modules declare required_providers at exact versions and never configure providers. Check that nothing a
+        template reads is renamed without the template changing too, that tokens are as narrow as the provider allows,
+        and that applying can't reset or destroy settings the module doesn't own.
+    - path: "**/*.md"
+      instructions: >-
+        Docs should say what a template does, its inputs, secrets and permissions, and show a caller pinned by commit
+        SHA. Check that docs match the templates in the same change.
+  tools:
+    actionlint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    checkov:
+      enabled: true

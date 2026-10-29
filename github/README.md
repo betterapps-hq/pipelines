@@ -6,7 +6,7 @@ Composite actions live here, in `actions/<name>/action.yml`. Reusable workflows 
 Pin every call to a full commit SHA, with the version in a comment:
 
 ```yaml
-uses: Fencing-Club/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.1.0
+uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.1.0
 ```
 
 ## setup
@@ -40,7 +40,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: Fencing-Club/pipelines/github/actions/setup@<commit sha> # v1.1.0
+      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.1.0
       - run: pnpm test:integration
 ```
 
@@ -80,7 +80,7 @@ permissions:
 
 jobs:
   verify:
-    uses: Fencing-Club/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.1.0
     with:
       os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
       # Parity's tests need its fixture projects installed, each with its own package manager.
@@ -144,7 +144,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: Fencing-Club/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
     with:
       environment: preview
       preview-name: pr-${{ github.event.pull_request.number }}
@@ -158,7 +158,7 @@ jobs:
   build-storybook:
     runs-on: ubuntu-latest
     steps:
-      - uses: Fencing-Club/pipelines/github/actions/setup@<commit sha> # v1.1.0
+      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.1.0
       - run: pnpm --filter web build-storybook
       - uses: actions/upload-artifact@<commit sha> # v7
         with:
@@ -166,13 +166,13 @@ jobs:
           path: apps/web/storybook-static
   staging:
     needs: build-storybook
-    uses: Fencing-Club/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
     with:
       environment: staging
       artifact: storybook
   production:
     needs: staging
-    uses: Fencing-Club/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
     with:
       environment: production
       artifact: storybook
@@ -209,7 +209,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: Fencing-Club/pipelines/.github/workflows/unpublish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/unpublish-storybook.yml@<commit sha> # v1.1.0
     with:
       preview-name: pr-${{ github.event.pull_request.number }}
       working-directory: apps/desktop
