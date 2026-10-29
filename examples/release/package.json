@@ -1,0 +1,13 @@
+{
+  "name": "example-release",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.10.1",
+  "beachball": {
+    "branch": "origin/main",
+    "fetch": false
+  },
+  "devDependencies": {
+    "beachball": "2.66.0"
+  }
+}

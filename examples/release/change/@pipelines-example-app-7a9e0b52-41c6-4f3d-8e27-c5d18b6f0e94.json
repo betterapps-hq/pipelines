@@ -1,0 +1,7 @@
+{
+  "type": "patch",
+  "comment": "Show the greeting in the window's title",
+  "packageName": "@pipelines-example/app",
+  "email": "example@users.noreply.github.com",
+  "dependentChangeType": "patch"
+}

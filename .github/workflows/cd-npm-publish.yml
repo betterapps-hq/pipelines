@@ -1,0 +1,240 @@
+name: Publish to npm
+
+# Publishes the workspace's packages whose versions npm doesn't have yet, in dependency order, through npm's trusted
+# publishing: no token, and with provenance. npm trusts the top-level workflow's file, not this one, so each repository
+# registers its own cd-npm.yml on npmjs.com, and that calls this. github/README.md shows it.
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: The workspace's root, relative to the repository's.
+        type: string
+        default: .
+      require-publish-config:
+        description: >-
+          Publish only packages whose package.json has a publishConfig, for workspaces where a package that isn't
+          private still isn't for npm, such as a desktop app Beachball versions.
+        type: boolean
+        default: false
+      build-command:
+        description: >-
+          What builds the packages before they're published, run in the working directory. Empty runs the build script
+          of each package being published and of the workspace packages it depends on, where they have one.
+        type: string
+        default: ""
+      access:
+        description: public or restricted, for scoped packages. Provenance needs public.
+        type: string
+        default: public
+      environment:
+        description:
+          The GitHub environment publishing runs in, which can be protected and which npm's trusted publisher can name.
+        type: string
+        default: npm
+      toolchain:
+        description: vite-plus, pnpm, or auto, as the setup action takes it.
+        type: string
+        default: auto
+      dry-run:
+        description: >-
+          Find the packages, build them and run pnpm publish --dry-run, without the environment or publishing. The
+          caller still grants id-token: write, which GitHub checks before the run starts.
+        type: boolean
+        default: false
+    outputs:
+      packages:
+        description: >-
+          The packages published, or that a dry run would publish, in the order they're published: a JSON array of name,
+          version and path from the repository's root.
+        value: ${{ jobs.select.outputs.packages }}
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    name: Find the versions npm doesn't have
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      packages: ${{ steps.select.outputs.packages }}
+      any: ${{ steps.select.outputs.any }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      # Provenance names the commit the run started from, so a run whose CI commit is no longer the branch's head skips:
+      # the head's own run publishes it.
+      - id: ready
+        working-directory: .
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          ACCESS: ${{ inputs.access }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          case "$ACCESS" in
+            public | restricted) ;;
+            *) echo "::error::access is public or restricted, not '$ACCESS'." && exit 1 ;;
+          esac
+          if [ "$DRY_RUN" != true ] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::notice::Skipped: packages are published only from $DEFAULT_BRANCH, not $GITHUB_REF."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ "$DRY_RUN" != true ] && [ -n "$CI_SHA" ] && [ "$CI_SHA" != "$GITHUB_SHA" ]; then
+            echo "::notice::Skipped: $DEFAULT_BRANCH has moved on from ${CI_SHA::7} to ${GITHUB_SHA::7}, whose own run publishes it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Finding the packages only reads package.json files and the registry, so only a dry run, which builds, installs.
+      # A reusable workflow's ./ is the caller's repository, so it names its own actions in full, pinned to a release's
+      # commit, which Dependabot moves.
+      - if: steps.ready.outputs.ready == 'true'
+        uses: betterapps-hq/pipelines/github/actions/setup@978c87e0f9676edfb85ea5ca735e3cea656c8475 # v1.1.0
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+          install: ${{ inputs.dry-run }}
+
+      # Publishable: not private, not Beachball's shouldPublish: false, and with a publishConfig when that's required.
+      # Of those, the versions npm (or the package's publishConfig.registry) doesn't have, in dependency order.
+      - if: steps.ready.outputs.ready == 'true'
+        id: select
+        env:
+          REQUIRE_PUBLISH_CONFIG: ${{ inputs.require-publish-config }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process"
+          import { appendFileSync, readFileSync } from "node:fs"
+          import { join, relative } from "node:path"
+
+          const env = process.env
+          const run = (command, ...args) => execFileSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+          const root = run("git", "rev-parse", "--show-toplevel").trim()
+          const workspace = JSON.parse(run("pnpm", "ls", "--recursive", "--depth", "-1", "--json"))
+            .map((project) => ({
+              path: relative(root, project.path).replaceAll("\\", "/") || ".",
+              manifest: JSON.parse(readFileSync(join(project.path, "package.json"), "utf8"))
+            }))
+            .filter((project) => project.manifest.name)
+          const byName = new Map(workspace.map((project) => [project.manifest.name, project]))
+
+          // Dependencies of every kind count, so a package is published after the workspace packages it needs.
+          const needs = ({ manifest }) =>
+            Object.keys({
+              ...manifest.dependencies,
+              ...manifest.devDependencies,
+              ...manifest.optionalDependencies,
+              ...manifest.peerDependencies
+            }).filter((name) => name !== manifest.name && byName.has(name))
+          const order = []
+          const remaining = [...byName.keys()].sort()
+          while (remaining.length) {
+            // The first in name order whose dependencies are placed; in a cycle, the first in name order.
+            const next = remaining.find((name) => needs(byName.get(name)).every((dep) => order.includes(dep))) ?? remaining[0]
+            remaining.splice(remaining.indexOf(next), 1)
+            order.push(next)
+          }
+
+          async function published(manifest) {
+            const registry = (manifest.publishConfig?.registry ?? "https://registry.npmjs.org/").replace(/\/?$/, "/")
+            const response = await fetch(`${registry}${manifest.name.replace("/", "%2f")}`, {
+              headers: { accept: "application/vnd.npm.install-v1+json" }
+            })
+            if (response.status === 404) return false
+            if (!response.ok) throw new Error(`${registry} answered ${response.status} for ${manifest.name}.`)
+            return Boolean((await response.json()).versions?.[manifest.version])
+          }
+
+          async function notPublished(manifest) {
+            if (manifest.private) return "it's private"
+            if (manifest.beachball?.shouldPublish === false) return "Beachball's shouldPublish is false"
+            if (!manifest.version) return "it has no version"
+            if (env.REQUIRE_PUBLISH_CONFIG === "true" && !manifest.publishConfig) return "it has no publishConfig"
+            if (await published(manifest)) return `the registry has ${manifest.version}`
+            return undefined
+          }
+
+          const packages = []
+          const skipped = []
+          for (const name of order) {
+            const { path, manifest } = byName.get(name)
+            const reason = await notPublished(manifest)
+            if (reason) skipped.push(`- \`${name}\`: ${reason}`)
+            else packages.push({ name, version: manifest.version, path })
+          }
+
+          appendFileSync(env.GITHUB_OUTPUT, `packages=${JSON.stringify(packages)}\nany=${packages.length > 0}\n`)
+          const rows = packages.map((pkg) => `| \`${pkg.name}\` | ${pkg.version} | \`${pkg.path}\` |`)
+          const summary = packages.length
+            ? ["## To publish", "", "| Package | Version | Path |", "| --- | --- | --- |", ...rows]
+            : ["## Nothing to publish"]
+          appendFileSync(env.GITHUB_STEP_SUMMARY, [...summary, "", "**Not published:**", "", ...skipped, ""].join("\n"))
+          console.log(packages.length ? `To publish: ${packages.map((pkg) => pkg.name).join(", ")}` : "Nothing to publish.")
+          NODE
+
+      - if: inputs.dry-run && steps.select.outputs.any == 'true' && inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+      - if: inputs.dry-run && steps.select.outputs.any == 'true' && inputs.build-command == ''
+        name: Build the packages and their dependencies
+        env:
+          PACKAGES: ${{ steps.select.outputs.packages }}
+        run: |
+          mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)..."' <<< "$PACKAGES")
+          pnpm "${filters[@]}" --recursive run --if-present build
+      - if: inputs.dry-run && steps.select.outputs.any == 'true'
+        name: Publish, as a dry run
+        env:
+          PACKAGES: ${{ steps.select.outputs.packages }}
+          ACCESS: ${{ inputs.access }}
+        run: |
+          mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)"' <<< "$PACKAGES")
+          pnpm "${filters[@]}" --recursive publish --dry-run --access "$ACCESS" --no-git-checks
+
+  # The environment can wait for an approval, so this runs only when there's something to publish.
+  publish:
+    name: Publish to npm
+    needs: select
+    if: ${{ !inputs.dry-run && needs.select.outputs.any == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      # npm's trusted publishing exchanges the run's OIDC token for a short-lived one, and provenance is signed with it.
+      id-token: write
+    # Publishes queue rather than cancel, so one is never cut off between two packages.
+    concurrency:
+      group: cd-npm-publish-${{ inputs.working-directory }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: betterapps-hq/pipelines/github/actions/setup@978c87e0f9676edfb85ea5ca735e3cea656c8475 # v1.1.0
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+      - if: inputs.build-command != ''
+        run: ${{ inputs.build-command }}
+      - if: inputs.build-command == ''
+        name: Build the packages and their dependencies
+        env:
+          PACKAGES: ${{ needs.select.outputs.packages }}
+        run: |
+          mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)..."' <<< "$PACKAGES")
+          pnpm "${filters[@]}" --recursive run --if-present build
+      # pnpm publishes in dependency order, and skips a version npm got since the select job looked.
+      - name: Publish with provenance
+        env:
+          PACKAGES: ${{ needs.select.outputs.packages }}
+          ACCESS: ${{ inputs.access }}
+        run: |
+          mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)"' <<< "$PACKAGES")
+          pnpm "${filters[@]}" --recursive publish --provenance --access "$ACCESS" --no-git-checks
+          jq -r '"Published:", (.[] | "- \(.name)@\(.version)")' <<< "$PACKAGES" >> "$GITHUB_STEP_SUMMARY"

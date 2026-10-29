@@ -1,0 +1,13 @@
+{
+  "name": "@pipelines-example/cli",
+  "version": "1.0.0",
+  "description": "Published, after the core it depends on.",
+  "type": "module",
+  "exports": "./index.js",
+  "dependencies": {
+    "@pipelines-example/core": "workspace:^"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
