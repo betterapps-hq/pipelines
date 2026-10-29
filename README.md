@@ -57,7 +57,11 @@ Cloud services the templates need come from Terraform, never by hand or from a p
 [`test.yml`](.github/workflows/test.yml) lints every workflow with actionlint, runs the setup action from the commit
 under test against both examples on Ubuntu, Windows and macOS, and calls each reusable workflow against them. A reusable
 workflow uses this repository's actions at the release it names, so a change to an action is tested directly, and
-reaches the workflows when it's released.
+reaches the workflows when it's released. It also validates the Terraform modules, and checks the Storybook templates
+skip cleanly where nothing is set up to publish to.
+
+The repository is on Vite+, as its callers are: `pnpm format` formats the workflows, actions, modules and docs with
+`vp fmt`, and `pnpm verify` checks them, which CI runs through ci-verify. Each example workspace keeps its own settings.
 
 ## Releasing
 

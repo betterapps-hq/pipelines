@@ -1,0 +1,13 @@
+{
+  "name": "pipelines",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "vp fmt",
+    "verify": "vp check"
+  },
+  "devDependencies": {
+    "vite-plus": "1.4.0"
+  },
+  "packageManager": "pnpm@12.10.1"
+}
