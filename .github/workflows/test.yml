@@ -48,6 +48,8 @@ jobs:
         with:
           checkout: "false"
           working-directory: examples/${{ matrix.example }}
+          # This repository has no LFS objects, so this proves the steps run cleanly on every system.
+          lfs: "true"
       - name: Check it picked the example's toolchain
         shell: bash
         env:
@@ -63,15 +65,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        example: [pnpm, vite-plus]
+        include:
+          - example: pnpm
+            verify: pnpm verify
+          # Verified through the task cache, so there's a cache to save, and again to show in the log what it replays.
+          - example: vite-plus
+            verify: vp run --cache verify && test -n "$(ls -A node_modules/.vite/task-cache)" && vp run --cache verify
     uses: ./.github/workflows/ci-verify.yml
     with:
       os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
       working-directory: examples/${{ matrix.example }}
+      env: |
+        EXAMPLE_ENV=reached the install and every step
+      node-options: --max-old-space-size=4096
+      concurrency-key: test-${{ github.ref }}
+      vite-task-cache: ${{ matrix.example == 'vite-plus' }}
       prepare: echo prepared > prepared.txt
       cache-path: examples/${{ matrix.example }}/prepared.txt
       cache-key-files: examples/${{ matrix.example }}/package.json
-      command: test -f prepared.txt && pnpm verify
+      command: |
+        test "$EXAMPLE_ENV" = "reached the install and every step"
+        test "$NODE_OPTIONS" = --max-old-space-size=4096
+        test -f prepared.txt
+        ${{ matrix.verify }}
 
   # Nothing here is set up to publish to, so these check the templates skip with a notice rather than fail. The test
   # environment exists only for that.

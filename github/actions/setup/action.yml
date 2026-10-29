@@ -24,6 +24,9 @@ inputs:
   install:
     description: Install the workspace's dependencies from its lockfile.
     default: "true"
+  lfs:
+    description: Fetch the repository's Git LFS objects after checking out, cached until they change.
+    default: "false"
 
 outputs:
   toolchain:
@@ -44,6 +47,33 @@ runs:
         ref: ${{ inputs.ref }}
         fetch-depth: ${{ inputs.fetch-depth }}
         persist-credentials: false
+
+    # LFS objects are cached by the list of them and the fetch filters, so they're downloaded only when one changes.
+    # Git hashes them, since every system has it. The cache is where Git LFS keeps its objects, which it reports, and
+    # its filters are set up in the checkout so the pull replaces the pointers.
+    - if: inputs.lfs == 'true'
+      id: lfs
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        git lfs install --local
+        hash=$({
+          git lfs ls-files --long | cut -d ' ' -f1 | sort
+          git config --get-all lfs.fetchinclude || true
+          git config --get-all lfs.fetchexclude || true
+        } | git hash-object --stdin)
+        echo "hash=$hash" >> "$GITHUB_OUTPUT"
+        echo "path=$(git lfs env | sed -n 's/^LocalMediaDir=//p')" >> "$GITHUB_OUTPUT"
+    - if: inputs.lfs == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.lfs.outputs.path }}
+        key: lfs-${{ runner.os }}-${{ steps.lfs.outputs.hash }}
+        restore-keys: lfs-${{ runner.os }}-
+    - if: inputs.lfs == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: git lfs pull
 
     - id: toolchain
       shell: bash
@@ -70,7 +100,7 @@ runs:
       with:
         working-directory: ${{ inputs.working-directory }}
         node-version-file: .nvmrc
-        cache: "true"
+        cache: ${{ inputs.install }}
         run-install: ${{ inputs.install }}
 
     # pnpm comes first, so setup-node can find its store to cache. Its version is package.json's packageManager.
@@ -82,7 +112,9 @@ runs:
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version-file: ${{ inputs.working-directory }}/.nvmrc
-        cache: pnpm
+        # A job that doesn't install has no store to restore or save, and setup-node mustn't guess a cache of its own.
+        cache: ${{ inputs.install == 'true' && 'pnpm' || '' }}
+        package-manager-cache: false
         cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
     - if: steps.toolchain.outputs.toolchain == 'pnpm' && inputs.install == 'true'
       shell: bash
