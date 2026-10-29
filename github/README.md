@@ -274,6 +274,8 @@ jobs:
     uses: betterapps-hq/pipelines/.github/workflows/release-prepare.yml@<commit sha> # <version>
     with:
       app-client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+    # Secrets go by name, so a repository with a token instead passes RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }} and
+    # no app-client-id, here and below.
     secrets:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
   merge:
@@ -357,11 +359,13 @@ through npm's trusted publishing: no token, and with provenance.
   package that isn't private still isn't for npm, as Parity's desktop app isn't.
 - **Only versions the registry doesn't have,** asked of npm or the package's `publishConfig.registry`. A run that failed
   or never ran is caught up by the next, and a run with nothing new asks for no approval.
+- **Publicly,** as provenance needs, so the registry is asked without credentials.
 - **Dependencies first:** a package is published after the workspace packages it depends on, of any kind.
 - **Built first:** `build-command` builds the workspace, or by default each package being published and the workspace
   packages it depends on run their `build` scripts, where they have one.
-- **From the default branch only,** and only the commit CI passed on while it's still the head, since provenance names
-  the commit the run started from. A newer commit's run publishes that one.
+- **From the default branch only,** and only the commit CI passed on while it's still the head, checked again just
+  before publishing, after any wait for an approval. Provenance names the commit the run started from, and a newer
+  commit's run publishes that one.
 - **A dry run** finds the packages, builds them and runs `pnpm publish --dry-run`, without the environment.
 
 npm checks the name of the workflow file that started the run, not one it calls, so a repository calls this from its own
@@ -369,15 +373,14 @@ npm checks the name of the workflow file that started the run, not one it calls,
 only takes a trusted publisher for a package that exists, so a package's first version is published by hand. Protect the
 `npm` environment so only `main` deploys to it, with an approval if releases should wait for one.
 
-| Input                    | Default  | What it's for                                                                      |
-| ------------------------ | -------- | ---------------------------------------------------------------------------------- |
-| `working-directory`      | `.`      | The workspace's root, relative to the repository's.                                |
-| `require-publish-config` | `false`  | Publish only packages with a `publishConfig`.                                      |
-| `build-command`          | (empty)  | What builds the packages, in the working directory; empty runs their `build`s.     |
-| `access`                 | `public` | `public` or `restricted`, for scoped packages. Provenance needs `public`.          |
-| `environment`            | `npm`    | The GitHub environment publishing runs in, which npm's trusted publisher can name. |
-| `toolchain`              | `auto`   | As the setup action takes it.                                                      |
-| `dry-run`                | `false`  | Find, build and pack the packages without publishing.                              |
+| Input                    | Default | What it's for                                                                      |
+| ------------------------ | ------- | ---------------------------------------------------------------------------------- |
+| `working-directory`      | `.`     | The workspace's root, relative to the repository's.                                |
+| `require-publish-config` | `false` | Publish only packages with a `publishConfig`.                                      |
+| `build-command`          | (empty) | What builds the packages, in the working directory; empty runs their `build`s.     |
+| `environment`            | `npm`   | The GitHub environment publishing runs in, which npm's trusted publisher can name. |
+| `toolchain`              | `auto`  | As the setup action takes it.                                                      |
+| `dry-run`                | `false` | Find, build and pack the packages without publishing.                              |
 
 Output: `packages`, those published, or that a dry run would publish, as a JSON array of `name`, `version` and `path`.
 

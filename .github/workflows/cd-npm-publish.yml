@@ -22,10 +22,6 @@ on:
           of each package being published and of the workspace packages it depends on, where they have one.
         type: string
         default: ""
-      access:
-        description: public or restricted, for scoped packages. Provenance needs public.
-        type: string
-        default: public
       environment:
         description:
           The GitHub environment publishing runs in, which can be protected and which npm's trusted publisher can name.
@@ -72,14 +68,9 @@ jobs:
         working-directory: .
         env:
           DRY_RUN: ${{ inputs.dry-run }}
-          ACCESS: ${{ inputs.access }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           CI_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          case "$ACCESS" in
-            public | restricted) ;;
-            *) echo "::error::access is public or restricted, not '$ACCESS'." && exit 1 ;;
-          esac
           if [ "$DRY_RUN" != true ] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             echo "::notice::Skipped: packages are published only from $DEFAULT_BRANCH, not $GITHUB_REF."
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -140,6 +131,7 @@ jobs:
             order.push(next)
           }
 
+          // Packages publish publicly, as provenance needs, so the registry answers without credentials.
           async function published(manifest) {
             const registry = (manifest.publishConfig?.registry ?? "https://registry.npmjs.org/").replace(/\/?$/, "/")
             const response = await fetch(`${registry}${manifest.name.replace("/", "%2f")}`, {
@@ -177,23 +169,26 @@ jobs:
           console.log(packages.length ? `To publish: ${packages.map((pkg) => pkg.name).join(", ")}` : "Nothing to publish.")
           NODE
 
-      - if: inputs.dry-run && steps.select.outputs.any == 'true' && inputs.build-command != ''
-        run: ${{ inputs.build-command }}
-      - if: inputs.dry-run && steps.select.outputs.any == 'true' && inputs.build-command == ''
-        name: Build the packages and their dependencies
+      # The caller's command reaches the shell through env, so the expression isn't spliced into the script.
+      - if: inputs.dry-run && steps.select.outputs.any == 'true'
+        name: Build the packages
         env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
           PACKAGES: ${{ steps.select.outputs.packages }}
         run: |
-          mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)..."' <<< "$PACKAGES")
-          pnpm "${filters[@]}" --recursive run --if-present build
+          if [ -n "$BUILD_COMMAND" ]; then
+            eval "$BUILD_COMMAND"
+          else
+            mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)..."' <<< "$PACKAGES")
+            pnpm "${filters[@]}" --recursive run --if-present build
+          fi
       - if: inputs.dry-run && steps.select.outputs.any == 'true'
         name: Publish, as a dry run
         env:
           PACKAGES: ${{ steps.select.outputs.packages }}
-          ACCESS: ${{ inputs.access }}
         run: |
           mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)"' <<< "$PACKAGES")
-          pnpm "${filters[@]}" --recursive publish --dry-run --access "$ACCESS" --no-git-checks
+          pnpm "${filters[@]}" --recursive publish --dry-run --access public --no-git-checks
 
   # The environment can wait for an approval, so this runs only when there's something to publish.
   publish:
@@ -220,21 +215,38 @@ jobs:
         with:
           working-directory: ${{ inputs.working-directory }}
           toolchain: ${{ inputs.toolchain }}
-      - if: inputs.build-command != ''
-        run: ${{ inputs.build-command }}
-      - if: inputs.build-command == ''
-        name: Build the packages and their dependencies
+      - name: Build the packages
         env:
+          BUILD_COMMAND: ${{ inputs.build-command }}
           PACKAGES: ${{ needs.select.outputs.packages }}
         run: |
-          mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)..."' <<< "$PACKAGES")
-          pnpm "${filters[@]}" --recursive run --if-present build
-      # pnpm publishes in dependency order, and skips a version npm got since the select job looked.
-      - name: Publish with provenance
+          if [ -n "$BUILD_COMMAND" ]; then
+            eval "$BUILD_COMMAND"
+          else
+            mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)..."' <<< "$PACKAGES")
+            pnpm "${filters[@]}" --recursive run --if-present build
+          fi
+      # Provenance names the commit the run started from, so a run the default branch has moved on from, as it can while
+      # this waits for an approval, publishes nothing: the newer commit's own run publishes.
+      - id: current
+        name: Check the commit is still the default branch's head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipped: $DEFAULT_BRANCH has moved on from ${GITHUB_SHA::7} to ${head::7}, whose own run publishes it."
+          fi
+      # pnpm publishes in dependency order, and skips a version npm got since the select job looked. Provenance needs
+      # public packages.
+      - if: steps.current.outputs.current == 'true'
+        name: Publish with provenance
         env:
           PACKAGES: ${{ needs.select.outputs.packages }}
-          ACCESS: ${{ inputs.access }}
         run: |
           mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)"' <<< "$PACKAGES")
-          pnpm "${filters[@]}" --recursive publish --provenance --access "$ACCESS" --no-git-checks
+          pnpm "${filters[@]}" --recursive publish --provenance --access public --no-git-checks
           jq -r '"Published:", (.[] | "- \(.name)@\(.version)")' <<< "$PACKAGES" >> "$GITHUB_STEP_SUMMARY"

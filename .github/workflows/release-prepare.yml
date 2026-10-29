@@ -138,13 +138,19 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           toolchain: ${{ inputs.toolchain }}
 
+      # The caller's commands reach the shell through env, so the expression isn't spliced into the script.
       - if: steps.ready.outputs.ready == 'true'
         name: Bump the versions and changelogs
         working-directory: ${{ inputs.working-directory }}
-        run: ${{ inputs.bump-command }}
+        env:
+          BUMP_COMMAND: ${{ inputs.bump-command }}
+        run: eval "$BUMP_COMMAND"
       - if: steps.ready.outputs.ready == 'true' && inputs.after-bump != ''
+        name: Run the commands after the bump
         working-directory: ${{ inputs.working-directory }}
-        run: ${{ inputs.after-bump }}
+        env:
+          AFTER_BUMP: ${{ inputs.after-bump }}
+        run: eval "$AFTER_BUMP"
 
       # The title lists the packages whose version changed, shortened to fit 72 characters, so a squash merge's subject
       # with its " (#123)" stays inside the 100 that commit hooks allow. The body adds each change file's comment.
