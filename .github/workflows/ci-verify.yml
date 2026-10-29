@@ -44,6 +44,29 @@ on:
         description: Cancel a run still going when a newer push to the same branch or pull request starts one.
         type: boolean
         default: true
+      concurrency-key:
+        description: >-
+          What runs are grouped by, in place of the branch or pull request: such as the run's ID, so runs on main never
+          wait on or cancel each other, or a name that keeps two calls in one workflow apart.
+        type: string
+        default: ""
+      env:
+        description: >-
+          Environment variables for every step, the install included, as NAME=value lines, such as a registry that
+          overrides .npmrc. Not for secrets.
+        type: string
+        default: ""
+      vite-task-cache:
+        description: Keep Vite+'s task cache between runs, restored from the newest one. Helps commands run with vp run.
+        type: boolean
+        default: false
+    secrets:
+      TURBO_TOKEN:
+        description: Turborepo's remote cache token. TURBO_API and TURBO_TEAM go through env with it.
+        required: false
+      TURBO_REMOTE_CACHE_SIGNATURE_KEY:
+        description: The key Turborepo signs and checks remote cache artifacts with, when the cache requires it.
+        required: false
 
 permissions:
   contents: read
@@ -59,13 +82,35 @@ jobs:
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # One group per runner, so the matrix's runs don't cancel each other.
     concurrency:
-      group: ci-verify-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}-${{ matrix.os }}
+      group:
+        ci-verify-${{ github.workflow }}-${{ inputs.concurrency-key || github.ref }}-${{ inputs.working-directory }}-${{
+        matrix.os }}
       cancel-in-progress: ${{ inputs.cancel-in-progress }}
     defaults:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
     steps:
+      # Before checking out, so the install sees them; the working directory doesn't exist yet. It always runs, since
+      # a step's if can't read secrets. Secrets that are set join the environment; GitHub keeps them masked.
+      - working-directory: .
+        env:
+          LINES: ${{ inputs.env }}
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_REMOTE_CACHE_SIGNATURE_KEY: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+        run: |
+          while IFS= read -r line; do
+            [ -z "${line//[[:space:]]/}" ] && continue
+            if [[ "$line" != *=* || "${line%%=*}" =~ [^A-Za-z0-9_] ]]; then
+              echo "::error::env takes NAME=value lines; this one isn't: ${line%%=*}"
+              exit 1
+            fi
+            echo "$line" >> "$GITHUB_ENV"
+          done <<< "$LINES"
+          for name in TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do
+            if [ -n "${!name}" ]; then echo "$name=${!name}" >> "$GITHUB_ENV"; fi
+          done
+
       # A reusable workflow's ./ is the caller's repository, so it names its own actions in full, pinned to a release's
       # commit, which Dependabot moves.
       - uses: betterapps-hq/pipelines/github/actions/setup@978c87e0f9676edfb85ea5ca735e3cea656c8475 # v1.1.0
@@ -77,7 +122,22 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ inputs.cache-path }}
-          key: ci-verify-${{ runner.os }}-${{ hashFiles(inputs.cache-key-files) }}
+          key: ci-verify-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(inputs.cache-key-files) }}
+      # Saved under this run and restored from the newest, so it moves on with every run instead of being kept once.
+      - if: inputs.vite-task-cache
+        id: vite-task-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.working-directory }}/node_modules/.vite/task-cache
+          key:
+            vite-task-${{ runner.os }}-${{ runner.arch }}-${{ inputs.working-directory }}-${{ github.run_id }}-${{
+            github.run_attempt }}
+          restore-keys: vite-task-${{ runner.os }}-${{ runner.arch }}-${{ inputs.working-directory }}-
       - if: inputs.prepare != ''
         run: ${{ inputs.prepare }}
       - run: ${{ inputs.command }}
+      - if: inputs.vite-task-cache && success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.working-directory }}/node_modules/.vite/task-cache
+          key: ${{ steps.vite-task-cache.outputs.cache-primary-key }}

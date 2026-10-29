@@ -6,7 +6,7 @@ Composite actions live here, in `actions/<name>/action.yml`. Reusable workflows 
 Pin every call to a full commit SHA, with the version in a comment:
 
 ```yaml
-uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.1.0
+uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.2.0
 ```
 
 ## setup
@@ -27,7 +27,8 @@ and installs its dependencies from the lockfile, with caches.
 | `fetch-depth`       | `1`     | Commits of history to fetch; `0` fetches all of it, which Beachball needs.     |
 | `working-directory` | `.`     | The workspace's root, relative to the repository's.                            |
 | `toolchain`         | `auto`  | `vite-plus`, `pnpm`, or `auto`, which looks for `vite-plus` in the workspace.  |
-| `install`           | `true`  | Install the workspace's dependencies.                                          |
+| `install`           | `true`  | Install the workspace's dependencies, with their cache.                        |
+| `lfs`               | `false` | Fetch the repository's Git LFS objects, cached until one changes.              |
 
 Output: `toolchain`, the one it set up.
 
@@ -40,7 +41,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.1.0
+      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.2.0
       - run: pnpm test:integration
 ```
 
@@ -62,10 +63,39 @@ before it.
 | `toolchain`          | `auto`              | As the setup action takes it.                                                           |
 | `timeout-minutes`    | `30`                | How long each runner gets.                                                              |
 | `cancel-in-progress` | `true`              | Cancel an older run on the same branch or pull request.                                 |
+| `concurrency-key`    | (empty)             | What runs are grouped by in place of the branch or pull request, such as the run's ID.  |
+| `env`                | (empty)             | `NAME=value` lines set before the install, for every step. Not for secrets.             |
+| `vite-task-cache`    | `false`             | Keep Vite+'s task cache between runs, restored from the newest.                         |
 
-Secrets: none. Permissions: `contents: read`.
+| Secret                             | What it's for                                                                    |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| `TURBO_TOKEN`                      | Turborepo's remote cache, with `TURBO_API` and `TURBO_TEAM` passed through `env` |
+| `TURBO_REMOTE_CACHE_SIGNATURE_KEY` | Signs and checks the remote cache's artifacts, where the cache requires it       |
 
-Commands run in bash on every system, Windows included.
+Both are optional, passed by name. Permissions: `contents: read`.
+
+- **Commands run in bash on every system,** Windows included.
+- **`env` is for settings the install needs,** such as `PNPM_CONFIG_REGISTRY` when a committed `.npmrc` points at a
+  registry CI can't reach. A caller's own workflow-level `env` doesn't reach a reusable workflow.
+- **`concurrency-key`** changes what a newer run cancels. `${{ github.event.pull_request.number || github.run_id }}`
+  keeps cancelling superseded pull request runs while runs on `main` never wait on each other.
+- **Its checks are named `<calling job> / Verify (<runner>)`.** Where a branch rule or other automation requires a check
+  by an older name, such as `verify`, keep the name with a small gate job rather than changing the rule:
+
+```yaml
+jobs:
+  ci-verify:
+    uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.2.0
+  # Keeps the "verify" check that branch protection requires.
+  verify:
+    needs: ci-verify
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULT: ${{ needs.ci-verify.result }}
+        run: test "$RESULT" = success
+```
 
 ```yaml
 # .github/workflows/ci.yml
@@ -80,13 +110,19 @@ permissions:
 
 jobs:
   verify:
-    uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.2.0
     with:
       os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
       # Parity's tests need its fixture projects installed, each with its own package manager.
       prepare: pnpm --filter @parity/fixtures install-projects
       cache-path: fixtures/*/node_modules
       cache-key-files: fixtures/*/*lock*
+      # Turborepo's remote cache, for a repository that has one.
+      env: |
+        TURBO_API=https://turbo.example.com
+        TURBO_TEAM=team_example
+    secrets:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
 ```
 
 ## publish-storybook
@@ -144,7 +180,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.2.0
     with:
       environment: preview
       preview-name: pr-${{ github.event.pull_request.number }}
@@ -158,7 +194,7 @@ jobs:
   build-storybook:
     runs-on: ubuntu-latest
     steps:
-      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.1.0
+      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.2.0
       - run: pnpm --filter web build-storybook
       - uses: actions/upload-artifact@<commit sha> # v7
         with:
@@ -166,13 +202,13 @@ jobs:
           path: apps/web/storybook-static
   staging:
     needs: build-storybook
-    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.2.0
     with:
       environment: staging
       artifact: storybook
   production:
     needs: staging
-    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/publish-storybook.yml@<commit sha> # v1.2.0
     with:
       environment: production
       artifact: storybook
@@ -209,7 +245,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: betterapps-hq/pipelines/.github/workflows/unpublish-storybook.yml@<commit sha> # v1.1.0
+    uses: betterapps-hq/pipelines/.github/workflows/unpublish-storybook.yml@<commit sha> # v1.2.0
     with:
       preview-name: pr-${{ github.event.pull_request.number }}
       working-directory: apps/desktop
