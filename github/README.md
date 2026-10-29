@@ -6,7 +6,7 @@ Composite actions live here, in `actions/<name>/action.yml`. Reusable workflows 
 Pin every call to a full commit SHA, with the version in a comment:
 
 ```yaml
-uses: Fencing-Club/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.0.0
+uses: Fencing-Club/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.0.1
 ```
 
 ## setup
@@ -40,7 +40,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: Fencing-Club/pipelines/github/actions/setup@<commit sha> # v1.0.0
+      - uses: Fencing-Club/pipelines/github/actions/setup@<commit sha> # v1.0.1
       - run: pnpm test:integration
 ```
 
@@ -80,7 +80,7 @@ permissions:
 
 jobs:
   verify:
-    uses: Fencing-Club/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.0.0
+    uses: Fencing-Club/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.0.1
     with:
       os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
       # Parity's tests need its fixture projects installed, each with its own package manager.

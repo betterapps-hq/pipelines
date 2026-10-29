@@ -25,12 +25,23 @@ Planned, in the order repositories need them: previews (`preview-npm`, `preview-
 `preview-storybook` and their cleanup), Beachball's release PR (`release-prepare`, `release-merge`), and delivery
 (`cd-npm-publish`, `cd-desktop-build`, `cd-desktop-release`, `cd-desktop-promote`, `cd-web-deploy`, `cd-web-promote`).
 
+## Terraform
+
+Cloud services the templates need come from Terraform, never by hand or from a pipeline.
+
+- **Modules live in `terraform/`,** one for each kind of service a template deploys to. A repository uses them from a
+  Terraform project in its own `infra/`, with its state in R2.
+- **A module also writes the GitHub variables and secrets its template reads,** so a template only deploys, and skips
+  with a notice until they exist.
+- **The first planned is `cloudflare-storybook-preview`,** for `preview-storybook`: the static-assets Worker a
+  repository's Storybook previews go to, and an API token that can only deploy it.
+
 ## Rules
 
 - **Callers pin a full commit SHA,** with the version in a comment, and Dependabot moves the pins. A pull request can
   then never run a changed copy of a template.
 - **Templates name their own actions in full, at the release they ship in:**
-  `Fencing-Club/pipelines/github/actions/setup@v1.0.0`. In a reusable workflow, `./` is the caller's repository.
+  `Fencing-Club/pipelines/github/actions/setup@v1.0.1`. In a reusable workflow, `./` is the caller's repository.
 - **Secrets are passed by name,** never `secrets: inherit`, and each job asks for the least permissions it needs.
 - **Templates use third-party actions pinned by commit,** with the version in a comment, which Dependabot moves.
 - **Each template documents its inputs, secrets, permissions and an example caller** in its system's README.
