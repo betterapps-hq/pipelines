@@ -214,3 +214,196 @@ jobs:
       preview-name: pr-${{ github.event.pull_request.number }}
       working-directory: apps/desktop
 ```
+
+## Terraform
+
+Two reusable workflows run a repository's Terraform projects, the ones in its `infra/` with their state in R2:
+`terraform-plan` on pull requests that change one, and `terraform-apply` on `main` after they merge.
+
+A project they run has:
+
+- **An `s3` backend block with its state key,** as [`cloudflare-storybook`'s example](../terraform/cloudflare-storybook)
+  shows. The bucket and R2's endpoint are inputs, given to `terraform init`.
+- **Its lockfile committed.** `terraform init` runs with `-lockfile=readonly`, so a provider the lockfile doesn't name
+  fails the run.
+- **Providers that read their credentials from the environment:** `provider "cloudflare" {}`, and `provider "github"`
+  with only its `owner`.
+
+### Where credentials come from
+
+- **`terraform-plan` takes secrets the caller passes by name,** not an environment's. It runs on every pull request, and
+  an environment would make each run a deployment, hold it for the environment's reviewers, and refuse branches its
+  rules leave out.
+- **So they should be read-only where the provider allows,** since any branch's pull request plans with them: an R2
+  token with Object Read only on the state bucket, a Cloudflare token with read permissions, and a GitHub token that can
+  read what the project manages. Plans don't take the state lock, so read-only state credentials are enough.
+- **`terraform-apply` takes the environment's own secrets,** by the same names, and nothing from the caller. Branch
+  rules on the environment can keep those write credentials to `main`, and required reviewers can approve each apply.
+- **Required reviewers need a public repository or a paid plan.** A private repository on GitHub Free has environments,
+  their secrets and branch rules, as Copacker's does, but its applies run without waiting for anyone.
+
+| Secret                       | When it's needed                                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `TF_STATE_ACCESS_KEY_ID`     | Always: an R2 access key for the state bucket. Without it and its secret, planning is skipped. |
+| `TF_STATE_SECRET_ACCESS_KEY` | Always: that key's secret.                                                                     |
+| `CLOUDFLARE_API_TOKEN`       | When the project uses the cloudflare provider.                                                 |
+| `TF_GITHUB_TOKEN`            | When it uses the github provider, which reads it as `GITHUB_TOKEN`.                            |
+| `NEON_API_KEY`               | When it uses the neon provider.                                                                |
+
+GitHub doesn't let a secret's name start with `GITHUB_`, so the github provider's token is `TF_GITHUB_TOKEN`. A project
+that needs another provider's credential gets it added here, by name, in a release.
+
+### A repository's `terraform.yml`
+
+```yaml
+# .github/workflows/terraform.yml
+name: Terraform
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/terraform.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: betterapps-hq/pipelines/.github/workflows/terraform-plan.yml@<commit sha> # <version>
+    with:
+      working-directory: infra
+      state-bucket: parity-terraform-state
+      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+    # Read-only credentials, since any branch's pull request plans with them.
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_READ_ACCESS_KEY_ID }}
+      TF_STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_READ_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_READ_API_TOKEN }}
+      TF_GITHUB_TOKEN: ${{ secrets.TF_GITHUB_READ_TOKEN }}
+
+  # The infrastructure environment holds the write credentials, kept to main by its branch rules.
+  apply:
+    if: github.event_name == 'push'
+    uses: betterapps-hq/pipelines/.github/workflows/terraform-apply.yml@<commit sha> # <version>
+    with:
+      environment: infrastructure
+      working-directory: infra
+      state-bucket: parity-terraform-state
+      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+```
+
+The plan isn't a required check: the workflow runs only when a project changes, and a required check that never reports
+holds a pull request open.
+
+A repository with several projects gives each its own job, or a matrix over their directories. Each gets its own
+comment, and `needs` orders their applies:
+
+```yaml
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    strategy:
+      matrix:
+        project: [staging, production]
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: betterapps-hq/pipelines/.github/workflows/terraform-plan.yml@<commit sha> # <version>
+    with:
+      working-directory: apps/copacker/infra/${{ matrix.project }}
+      fmt-path: ..
+      state-bucket: copacker-terraform-state
+      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_READ_ACCESS_KEY_ID }}
+      TF_STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_READ_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_READ_API_TOKEN }}
+
+  staging:
+    if: github.event_name == 'push'
+    uses: betterapps-hq/pipelines/.github/workflows/terraform-apply.yml@<commit sha> # <version>
+    with:
+      environment: infrastructure
+      working-directory: apps/copacker/infra/staging
+      state-bucket: copacker-terraform-state
+      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+
+  production:
+    needs: staging
+    uses: betterapps-hq/pipelines/.github/workflows/terraform-apply.yml@<commit sha> # <version>
+    with:
+      environment: infrastructure
+      working-directory: apps/copacker/infra/production
+      state-bucket: copacker-terraform-state
+      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+```
+
+## terraform-plan
+
+A reusable workflow for pull requests that change a Terraform project. It checks the project's formatting, validates it,
+plans it against its state in R2, and comments a summary of the plan, editing the same comment on later runs.
+
+- **The comment has addresses and actions only:** Terraform's counts, then each resource that's added, changed,
+  replaced, destroyed, read, imported or moved. A plan's values can be secret, so none of them reaches the comment or
+  the run's summary.
+- **The full plan is in the run's log,** with the values Terraform knows are sensitive hidden. `show-plan: false` keeps
+  it out, for a project whose other values shouldn't be in the log either.
+- **It doesn't take the state lock.** A plan only reads the state, so it never waits on an apply or holds one up.
+- **Without state credentials it still checks the project,** as on forks' and Dependabot's pull requests, which get no
+  repository secrets: it checks formatting and validates, then skips the plan with a notice, and doesn't comment.
+- **A failed plan says so in the comment,** with a link to the run, so the comment never shows a plan that's out of
+  date.
+- **A newer push cancels a plan still running.**
+
+| Input               | Default    | What it's for                                                                                    |
+| ------------------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| `working-directory` | (required) | The Terraform project's directory, relative to the repository's root, such as `infra`.           |
+| `state-bucket`      | (required) | The R2 bucket the state is in. The project's `s3` backend block sets the key.                    |
+| `state-endpoint`    | (required) | R2's S3 endpoint for the bucket's account: `https://<account id>.r2.cloudflarestorage.com`.      |
+| `backend-config`    | (empty)    | More backend settings for `terraform init`, as `key=value`, one per line.                        |
+| `terraform-version` | `1.16.6`   | The Terraform to run, which the project's `required_version` should allow.                       |
+| `fmt-path`          | `.`        | What `terraform fmt` checks, recursively, from the working directory. `..` takes in modules too. |
+| `show-plan`         | `true`     | Print the full plan in the run's log.                                                            |
+| `comment`           | `true`     | On a pull request, comment the plan's summary.                                                   |
+
+Secrets: those in [the table above](#where-credentials-come-from), all optional, passed by name.
+
+Output: `result`, which is `changes`, `no-changes`, or `skipped` when there were no state credentials.
+
+Permissions: `contents: read`, and `pull-requests: write` to comment, which the calling job has to grant.
+
+## terraform-apply
+
+A reusable workflow that applies a Terraform project in the GitHub environment the caller names, usually from `main`
+after a pull request merges. It plans from the commit that started the run, applies that plan, and writes what it did to
+the run's summary, as addresses and actions.
+
+- **It applies a fresh plan,** not the one the pull request showed. That one was made from the pull request's branch,
+  and `main` may have moved since. Terraform refuses to apply a plan if the state changes after it's made.
+- **Its credentials are the environment's secrets,** by the names in [the table above](#where-credentials-come-from).
+  Until the environment has the state credentials, the apply skips with a notice.
+- **Required reviewers on the environment approve before the job starts,** on the strength of the plan the pull request
+  showed, where the repository's plan has them.
+- **Applies to one project run one at a time.** A newer push replaces one still waiting, so the last push's
+  configuration is what's applied. Each takes the state lock, waiting up to five minutes for one held elsewhere.
+
+| Input               | Default    | What it's for                                                             |
+| ------------------- | ---------- | ------------------------------------------------------------------------- |
+| `environment`       | (required) | The GitHub environment that holds the credentials and gates the apply.    |
+| `working-directory` | (required) | The Terraform project's directory, relative to the repository's root.     |
+| `state-bucket`      | (required) | The R2 bucket the state is in.                                            |
+| `state-endpoint`    | (required) | R2's S3 endpoint for the bucket's account.                                |
+| `backend-config`    | (empty)    | More backend settings for `terraform init`, as `key=value`, one per line. |
+| `terraform-version` | `1.16.6`   | The Terraform to run.                                                     |
+| `show-plan`         | `true`     | Print the plan, and what the apply did, in the run's log.                 |
+
+Secrets: none passed; it reads the environment's own.
+
+Output: `result`, which is `applied`, `no-changes`, or `skipped` when the environment had no state credentials.
+
+Permissions: `contents: read`.

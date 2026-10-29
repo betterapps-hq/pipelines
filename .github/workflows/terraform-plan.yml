@@ -1,0 +1,257 @@
+name: Terraform plan
+
+# Plans a Terraform project for a pull request: checks its formatting, validates it, plans it against its state in R2,
+# and comments a summary of the plan, editing the same comment on later runs. Credentials are the secrets the caller
+# passes by name, not an environment's, so plans don't wait on approvals or deploy anything. github/README.md shows a
+# caller.
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: The Terraform project's directory, relative to the repository's root, such as infra.
+        type: string
+        required: true
+      terraform-version:
+        description: The Terraform version to run, which the project's required_version should allow.
+        type: string
+        default: 1.16.6
+      state-bucket:
+        description: The R2 bucket the project's state is in. The project's s3 backend block sets the key.
+        type: string
+        required: true
+      state-endpoint:
+        description: R2's S3 endpoint for the bucket's account, https://<account id>.r2.cloudflarestorage.com.
+        type: string
+        required: true
+      backend-config:
+        description: More settings for the backend, as key=value, one per line, given to terraform init.
+        type: string
+        default: ""
+      fmt-path:
+        description: >-
+          What terraform fmt checks, recursively, relative to the working directory. .. takes in modules beside it.
+        type: string
+        default: .
+      show-plan:
+        description: Print the full plan in the run's log. Terraform hides values marked sensitive either way.
+        type: boolean
+        default: true
+      comment:
+        description: On a pull request, comment the plan's summary, editing the same comment on later runs.
+        type: boolean
+        default: true
+    secrets:
+      TF_STATE_ACCESS_KEY_ID:
+        description: An R2 access key ID that can read the state bucket. Without it, the plan is skipped.
+        required: false
+      TF_STATE_SECRET_ACCESS_KEY:
+        description: The R2 access key's secret.
+        required: false
+      CLOUDFLARE_API_TOKEN:
+        description: For the cloudflare provider.
+        required: false
+      TF_GITHUB_TOKEN:
+        description: For the github provider, which reads it as GITHUB_TOKEN.
+        required: false
+      NEON_API_KEY:
+        description: For the neon provider.
+        required: false
+    outputs:
+      result:
+        description: changes, no-changes, or skipped when there were no state credentials to plan with.
+        value: ${{ jobs.plan.outputs.result }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan ${{ inputs.working-directory }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Write, to comment the plan. The caller's job has to grant it too.
+      pull-requests: write
+    # A plan changes nothing, so a newer push can stop one part way.
+    concurrency:
+      group: terraform-plan-${{ github.event.pull_request.number || github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: true
+    outputs:
+      result: ${{ steps.plan.outputs.result || steps.ready.outputs.result }}
+    # An explicit bash runs with pipefail.
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      # Forks' and Dependabot's pull requests get no repository secrets, so they're checked but not planned.
+      - id: ready
+        env:
+          HAS_STATE_CREDENTIALS: ${{ secrets.TF_STATE_ACCESS_KEY_ID != '' && secrets.TF_STATE_SECRET_ACCESS_KEY != '' }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          if [ "$HAS_STATE_CREDENTIALS" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Plan skipped: no TF_STATE_ACCESS_KEY_ID and TF_STATE_SECRET_ACCESS_KEY to read $WORKING_DIRECTORY's state with. Its formatting and configuration are still checked."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "result=skipped" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check formatting
+        env:
+          FMT_PATH: ${{ inputs.fmt-path }}
+        run: terraform fmt -check -recursive -diff "$FMT_PATH"
+
+      - name: Initialize
+        env:
+          READY: ${{ steps.ready.outputs.ready }}
+          STATE_BUCKET: ${{ inputs.state-bucket }}
+          STATE_ENDPOINT: ${{ inputs.state-endpoint }}
+          BACKEND_CONFIG: ${{ inputs.backend-config }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+        run: |
+          if [ "$READY" != true ]; then
+            terraform init -input=false -lockfile=readonly -backend=false
+            exit 0
+          fi
+          args=(-input=false -lockfile=readonly)
+          args+=("-backend-config=bucket=$STATE_BUCKET" "-backend-config=endpoints={s3=\"$STATE_ENDPOINT\"}")
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then args+=("-backend-config=$line"); fi
+          done <<< "$BACKEND_CONFIG"
+          terraform init "${args[@]}"
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      # No lock: a plan only reads the state, so it never waits on an apply or holds one up, and the state credentials
+      # can be read-only. The summary has addresses and actions only, since a plan's values can be secret.
+      - id: plan
+        name: Plan
+        if: steps.ready.outputs.ready == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.TF_GITHUB_TOKEN }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          SHOW_PLAN: ${{ inputs.show-plan }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE: ${{ github.base_ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          plan="$RUNNER_TEMP/terraform.tfplan"
+          code=0
+          if [ "$SHOW_PLAN" = true ]; then
+            terraform plan -input=false -no-color -lock=false -detailed-exitcode -out="$plan" || code=$?
+          else
+            terraform plan -input=false -no-color -lock=false -detailed-exitcode -out="$plan" > /dev/null || code=$?
+          fi
+          case "$code" in
+            0) result=no-changes ;;
+            2) result=changes ;;
+            *) exit "$code" ;;
+          esac
+
+          {
+            echo "### Terraform plan for \`$WORKING_DIRECTORY\`"
+            echo
+            terraform show -json "$plan" | jq -r --argjson limit 100 '
+              def words:
+                .change.actions as $actions
+                | [ if .change.importing != null then "import" else empty end,
+                    if .previous_address != null then "move" else empty end,
+                    if $actions == ["create"] then "create"
+                    elif $actions == ["update"] then "update"
+                    elif $actions == ["delete"] then "destroy"
+                    elif ($actions | sort) == ["create", "delete"] then "replace"
+                    elif $actions == ["read"] then "read"
+                    elif $actions == ["forget"] then "forget"
+                    else empty end ];
+              def sign:
+                if index("replace") then "-/+" elif index("destroy") then "-" elif index("create") then "+"
+                elif index("read") then "<=" else "~" end;
+              def pad($width): . + (" " * ([$width - length, 1] | max));
+              def count(f): map(select(f)) | length;
+              def line: "\(.words | sign | pad(4))\(.words | join(", ") | pad(16))\(.address)"
+                + if .from then " (from \(.from))" else "" end;
+              [.resource_changes[]? | .change] as $all
+              | [.resource_changes[]? | {address, from: .previous_address, words: words} | select(.words != [])]
+                as $changes
+              | [.output_changes // {} | to_entries[] | select(.value.actions != ["no-op"]) | .key] as $outputs
+              | if $changes == [] and $outputs == [] then
+                  "**No changes.** The infrastructure matches the configuration."
+                else
+                  ( [ ($all | count(.importing != null)) as $n | if $n > 0 then "\($n) to import" else empty end,
+                      "\($all | count(.actions | index("create"))) to add",
+                      "\($all | count(.actions == ["update"])) to change",
+                      "\($all | count(.actions | index("delete"))) to destroy",
+                      ($all | count(.actions == ["forget"])) as $n | if $n > 0 then "\($n) to forget" else empty end
+                    ] | "**Plan:** \(join(", "))." ),
+                  if $changes != [] then
+                    "",
+                    "```diff",
+                    ($changes[:$limit][] | line),
+                    ($changes | length) as $n | if $n > $limit then "... and \($n - $limit) more" else empty end,
+                    "```"
+                  else empty end,
+                  if $outputs != [] then "", "Outputs that change: \($outputs | map("`\(.)`") | join(", "))."
+                  else empty end
+                end'
+            echo
+            if [ -n "$BASE" ]; then into=" as merged into \`$BASE\`"; else into=""; fi
+            if [ "$SHOW_PLAN" = true ]; then
+              echo "Planned for ${SHA::7}$into. [The run's log]($RUN_URL) has the full plan, sensitive values hidden."
+            else
+              echo "Planned for ${SHA::7}$into, in [this run]($RUN_URL)."
+            fi
+          } > "$RUNNER_TEMP/terraform-plan.md"
+          cat "$RUNNER_TEMP/terraform-plan.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+
+      # One comment per project, found by its marker, which later runs edit. A failed run says so there, so the comment
+      # never shows a plan that's out of date.
+      - name: Comment the plan
+        if: >-
+          ${{ !cancelled() && steps.ready.outputs.ready == 'true' && inputs.comment && github.event_name ==
+          'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          MARKER: "<!-- terraform-plan ${{ inputs.working-directory }} -->"
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PLANNED: ${{ steps.plan.outputs.result != '' }}
+        run: |
+          if [ "$PLANNED" = true ]; then
+            body="$MARKER
+          $(cat "$RUNNER_TEMP/terraform-plan.md")"
+          else
+            body="$MARKER
+          ### Terraform plan for \`$WORKING_DIRECTORY\`
+
+          **The plan failed** for ${SHA::7}. [The run]($RUN_URL) says why."
+          fi
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" | jq -rn --arg marker "$MARKER" '
+            [inputs[] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker))) | .id]
+            | first // empty')
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+          fi
