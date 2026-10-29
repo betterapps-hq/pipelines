@@ -97,6 +97,7 @@ jobs:
 
       # Forks' and Dependabot's pull requests get no repository secrets, so they're checked but not planned.
       - id: ready
+        name: Check for state credentials
         env:
           HAS_STATE_CREDENTIALS: ${{ secrets.TF_STATE_ACCESS_KEY_ID != '' && secrets.TF_STATE_SECRET_ACCESS_KEY != '' }}
           WORKING_DIRECTORY: ${{ inputs.working-directory }}

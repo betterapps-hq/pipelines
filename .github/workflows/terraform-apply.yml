@@ -69,6 +69,7 @@ jobs:
       # The credentials are the environment's own secrets, set by hand or by another Terraform project; until they
       # exist there's nothing to apply with.
       - id: ready
+        name: Check for state credentials
         working-directory: .
         env:
           HAS_STATE_CREDENTIALS: ${{ secrets.TF_STATE_ACCESS_KEY_ID != '' && secrets.TF_STATE_SECRET_ACCESS_KEY != '' }}

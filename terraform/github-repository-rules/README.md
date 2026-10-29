@@ -82,7 +82,8 @@ Once they're applied, the import blocks can go.
 What the root project's Terraform runs with:
 
 - **GitHub, in `GITHUB_TOKEN` or the provider's GitHub App settings:** Administration write on the repository, to make
-  and change its rulesets. A plan only reads them.
+  and change its rulesets. A plan only reads them, so Administration read will do, unless `bypass_actors` lists anyone:
+  GitHub shows a ruleset's bypass actors only to a token that can write it, so with less, every plan adds them again.
 - **State, in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`:** a bucket-scoped R2 credential for the state bucket.
   Those are the S3 backend's names; no AWS account is involved.
 

@@ -17,8 +17,8 @@ variable "required_checks" {
   default     = []
 
   validation {
-    condition     = alltrue([for check in var.required_checks : length(trimspace(check)) > 0])
-    error_message = "A required check's name can't be empty."
+    condition     = alltrue([for check in var.required_checks : check != "" && check == trimspace(check)])
+    error_message = "A required check's name can't be empty or have spaces at either end: GitHub matches it exactly."
   }
 }
 

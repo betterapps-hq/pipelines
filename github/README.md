@@ -236,7 +236,9 @@ A project they run has:
   rules leave out.
 - **So they should be read-only where the provider allows,** since any branch's pull request plans with them: an R2
   token with Object Read only on the state bucket, a Cloudflare token with read permissions, and a GitHub token that can
-  read what the project manages. Plans don't take the state lock, so read-only state credentials are enough.
+  read what the project manages. Plans don't take the state lock, so read-only state credentials are enough. Some things
+  only show to a token that can write them, such as a ruleset's bypass actors, and a project that manages those needs
+  that token for its plans too.
 - **`terraform-apply` takes the environment's own secrets,** by the same names, and nothing from the caller. Branch
   rules on the environment can keep those write credentials to `main`, and required reviewers can approve each apply.
 - **Required reviewers need a public repository or a paid plan.** A private repository on GitHub Free has environments,
@@ -375,7 +377,8 @@ Secrets: those in [the table above](#where-credentials-come-from), all optional,
 
 Output: `result`, which is `changes`, `no-changes`, or `skipped` when there were no state credentials.
 
-Permissions: `contents: read`, and `pull-requests: write` to comment, which the calling job has to grant.
+Permissions: `contents: read`, and `pull-requests: write` to comment. The calling job has to grant both even with
+`comment: false` or outside a pull request, since the job asks for them whatever it does.
 
 ## terraform-apply
 
