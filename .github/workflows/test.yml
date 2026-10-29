@@ -26,6 +26,10 @@ jobs:
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
+      # Tests pass is the one check main requires, so a job it doesn't wait on could fail and still merge.
+      - name: Check Tests pass waits on every job
+        run: |
+          diff <(yq '.jobs | keys | .[]' .github/workflows/test.yml | grep -vx tests-pass | sort)             <(yq '.jobs["tests-pass"].needs[]' .github/workflows/test.yml | sort)
 
   setup:
     name: setup (${{ matrix.example }}, ${{ matrix.os }})

@@ -13,10 +13,12 @@ reviews:
       instructions: >-
         Reusable workflows are called by many repositories, so check for changes that break callers: renamed or removed
         inputs, outputs and secrets, and changed defaults. Third-party actions must be pinned by full commit SHA with
-        the version in a comment. This repository's own actions are named in full at the release tag they ship in, never
-        with ./ and never a moving tag such as v1. Secrets are passed by name, never secrets: inherit. Each job asks for
-        the least permissions it needs. Inputs reach shell scripts through env, not by expanding ${{ }} inside run.
-        Templates skip with a notice, rather than fail, when the settings Terraform writes don't exist yet.
+        the version in a comment. In a reusable workflow, this repository's own actions are named in full and pinned to
+        a release's commit, never with ./ (which is the caller's repository) and never a moving tag such as v1. Only
+        test.yml may use ./, where a job tests the action from the commit it checked out. Secrets are passed by name,
+        never secrets: inherit. Each job asks for the least permissions it needs. Inputs reach shell scripts through
+        env, not by expanding ${{ }} inside run. Templates skip with a notice, rather than fail, when the settings
+        Terraform writes don't exist yet.
     - path: "github/actions/**"
       instructions: >-
         Composite actions run in every caller's jobs on Ubuntu, Windows and macOS. Check that shell steps name bash and
