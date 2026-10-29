@@ -33,6 +33,11 @@ outputs:
 runs:
   using: composite
   steps:
+    # Windows runners turn LF into CRLF on checkout, which formatters then report on every file. A repository's
+    # .gitattributes wins over this either way.
+    - if: inputs.checkout == 'true' && runner.os == 'Windows'
+      shell: bash
+      run: git config --global core.autocrlf false
     - if: inputs.checkout == 'true'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:

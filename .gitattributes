@@ -1,0 +1,2 @@
+# Keep LF line endings on checkout whatever core.autocrlf says, so formatters pass on Windows.
+* text=auto eol=lf
