@@ -67,7 +67,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       # A reusable workflow's ./ is the caller's repository, so it names its own actions in full, at its release.
-      - uses: Fencing-Club/pipelines/github/actions/setup@v1.0.1
+      - uses: Fencing-Club/pipelines/github/actions/setup@v1.1.0
         with:
           fetch-depth: ${{ inputs.fetch-depth }}
           working-directory: ${{ inputs.working-directory }}

@@ -1,0 +1,167 @@
+name: Publish Storybook
+
+# Publishes a workspace's Storybook to the GitHub environment the caller names. That environment's variables and secret,
+# which the cloudflare-storybook Terraform module writes, say where it goes, so a new destination is a new environment.
+# Any stage calls it: previews with a preview name, staging and production without one. github/README.md shows callers.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub environment to publish to, such as preview, staging or production.
+        type: string
+        required: true
+      preview-name:
+        description: >-
+          Publish a Worker preview with this name, such as pr-123, instead of deploying the environment's Worker.
+        type: string
+        default: ""
+      working-directory:
+        description: The workspace's root, relative to the repository's.
+        type: string
+        default: .
+      build-command:
+        description: What builds the Storybook, run in the working directory.
+        type: string
+        default: pnpm build-storybook
+      output-dir:
+        description: Where the built Storybook is, relative to the working directory.
+        type: string
+        default: storybook-static
+      artifact:
+        description: >-
+          Publish this artifact from the same run, a Storybook an earlier job built, instead of building one. Staging
+          and production can then get the same build.
+        type: string
+        default: ""
+      comment:
+        description: On a pull request, comment the Storybook's URL, editing the same comment on later runs.
+        type: boolean
+        default: true
+      toolchain:
+        description: vite-plus, pnpm, or auto, as the setup action takes it.
+        type: string
+        default: auto
+    outputs:
+      url:
+        description: Where the Storybook was published; empty when publishing was skipped.
+        value: ${{ jobs.publish.outputs.url }}
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: 4.148.0
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  publish:
+    name: Publish Storybook to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.publish.outputs.url }}
+    permissions:
+      contents: read
+      # Write, to comment the URL. The caller's job has to grant it too.
+      pull-requests: write
+    # Publishes to one place queue rather than cancel, so the last push's Storybook is what stays.
+    concurrency:
+      group: publish-storybook-${{ inputs.environment }}-${{ inputs.preview-name }}-${{ inputs.working-directory }}
+      cancel-in-progress: false
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    # An explicit bash runs with pipefail, so Wrangler's own failure isn't hidden behind tee.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The environment's settings come from Terraform; until they exist there's nowhere to publish.
+      - id: ready
+        env:
+          WORKER: ${{ vars.STORYBOOK_WORKER }}
+          ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          HAS_TOKEN: ${{ secrets.STORYBOOK_CLOUDFLARE_API_TOKEN != '' }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if [ -n "$WORKER" ] && [ -n "$ACCOUNT" ] && [ "$HAS_TOKEN" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipped: the $ENVIRONMENT environment has no STORYBOOK_WORKER, CLOUDFLARE_ACCOUNT_ID and STORYBOOK_CLOUDFLARE_API_TOKEN yet. The cloudflare-storybook Terraform module writes them."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.artifact == ''
+        uses: Fencing-Club/pipelines/github/actions/setup@v1.1.0
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+      - if: steps.ready.outputs.ready == 'true' && inputs.artifact == ''
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.build-command }}
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.artifact != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - if: steps.ready.outputs.ready == 'true' && inputs.artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ runner.temp }}/storybook
+
+      # An assets-only Worker: no script, just the built files.
+      - if: steps.ready.outputs.ready == 'true'
+        id: publish
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STORYBOOK_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER: ${{ vars.STORYBOOK_WORKER }}
+          ENVIRONMENT_URL: ${{ vars.STORYBOOK_URL }}
+          PREVIEW_NAME: ${{ inputs.preview-name }}
+          ARTIFACT: ${{ inputs.artifact }}
+          BUILT: ${{ github.workspace }}/${{ inputs.working-directory }}/${{ inputs.output-dir }}
+        run: |
+          if [ -n "$ARTIFACT" ]; then dir="$RUNNER_TEMP/storybook"; else dir="$BUILT"; fi
+          if [ ! -f "$dir/index.html" ]; then
+            echo "::error::No Storybook at $dir: it has no index.html."
+            exit 1
+          fi
+          config="$RUNNER_TEMP/wrangler.json"
+          jq -n --arg name "$WORKER" --arg dir "$dir" '{
+            name: $name,
+            compatibility_date: "2026-10-01",
+            assets: { directory: $dir, not_found_handling: "404-page" },
+            workers_dev: true,
+            preview_urls: true
+          }' > "$config"
+          if [ -n "$PREVIEW_NAME" ]; then
+            npx --yes "wrangler@$WRANGLER_VERSION" preview --config "$config" --name "$PREVIEW_NAME" 2>&1 | tee publish.log
+            url=$(grep -oE "https://${PREVIEW_NAME}-${WORKER}\.[a-z0-9.-]+\.workers\.dev" publish.log | head -n 1 || true)
+          else
+            npx --yes "wrangler@$WRANGLER_VERSION" deploy --config "$config" 2>&1 | tee publish.log
+            url="$ENVIRONMENT_URL"
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # One comment per environment and workspace, found by its marker: later runs edit it, and unpublish-storybook
+      # marks it removed.
+      - if: steps.publish.outputs.url != '' && inputs.comment && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.publish.outputs.url }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          MARKER: "<!-- publish-storybook ${{ inputs.environment }} ${{ inputs.working-directory }} -->"
+        run: |
+          body="$MARKER
+          **Storybook:** $URL
+
+          Published from ${SHA::7}. A Storybook being up doesn't mean CI passed."
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+          fi

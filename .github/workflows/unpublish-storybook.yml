@@ -1,0 +1,101 @@
+name: Unpublish Storybook
+
+# Deletes a Storybook that publish-storybook published as a Worker preview, such as a closed pull request's, and marks
+# its comment removed. github/README.md shows a caller.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub environment the preview was published to.
+        type: string
+        default: preview
+      preview-name:
+        description: The preview's name, such as pr-123.
+        type: string
+        required: true
+      working-directory:
+        description: The workspace publish-storybook was given, which its comment's marker names.
+        type: string
+        default: .
+      comment:
+        description: On a pull request, mark publish-storybook's comment removed.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: 4.148.0
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  unpublish:
+    name: Unpublish Storybook ${{ inputs.preview-name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      # Write, to mark the comment removed. The caller's job has to grant it too.
+      pull-requests: write
+    # An explicit bash runs with pipefail, so Wrangler's own failure reaches the if.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - id: ready
+        env:
+          WORKER: ${{ vars.STORYBOOK_WORKER }}
+          ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          HAS_TOKEN: ${{ secrets.STORYBOOK_CLOUDFLARE_API_TOKEN != '' }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if [ -n "$WORKER" ] && [ -n "$ACCOUNT" ] && [ "$HAS_TOKEN" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipped: the $ENVIRONMENT environment has no STORYBOOK_WORKER, CLOUDFLARE_ACCOUNT_ID and STORYBOOK_CLOUDFLARE_API_TOKEN yet, so nothing was published to it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.ready.outputs.ready == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      # A pull request closed before its Storybook was published has nothing to delete. While the Worker is being
+      # deployed Cloudflare can report it missing, so that error is retried.
+      - if: steps.ready.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STORYBOOK_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER: ${{ vars.STORYBOOK_WORKER }}
+          PREVIEW_NAME: ${{ inputs.preview-name }}
+        run: |
+          for _ in 1 2 3 4 5; do
+            if npx --yes "wrangler@$WRANGLER_VERSION" preview delete --worker-name "$WORKER" --name "$PREVIEW_NAME" 2>&1 | tee delete.log; then
+              exit 0
+            fi
+            if grep -q "Preview not found" delete.log; then
+              echo "No preview named $PREVIEW_NAME to delete."
+              exit 0
+            fi
+            grep -q "Worker does not exist" delete.log || exit 1
+            echo "The Worker is being deployed; retrying in 30 seconds."
+            sleep 30
+          done
+          exit 1
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.comment && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          MARKER: "<!-- publish-storybook ${{ inputs.environment }} ${{ inputs.working-directory }} -->"
+        run: |
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$MARKER\"))) | .id" | head -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" \
+              -f body="$MARKER
+          **Storybook:** removed when the pull request closed." > /dev/null
+          fi

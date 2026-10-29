@@ -1,0 +1,5 @@
+# What terraform init and plan leave behind. Lock files are kept.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
