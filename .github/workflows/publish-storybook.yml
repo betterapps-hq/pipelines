@@ -92,7 +92,7 @@ jobs:
           fi
 
       - if: steps.ready.outputs.ready == 'true' && inputs.artifact == ''
-        uses: betterapps-hq/pipelines/github/actions/setup@978c87e0f9676edfb85ea5ca735e3cea656c8475 # v1.1.0
+        uses: betterapps-hq/pipelines/github/actions/setup@c3b85f070cf22fbf7a4dae841461f82e2b16ea20 # v1.2.0
         with:
           working-directory: ${{ inputs.working-directory }}
           toolchain: ${{ inputs.toolchain }}

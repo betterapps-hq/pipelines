@@ -60,6 +60,7 @@ before it.
 | `cache-path`         | (empty)             | More paths to cache, one per line, relative to the repository: what `prepare` installs. |
 | `cache-key-files`    | (empty)             | A glob of the files that key that cache, relative to the repository.                    |
 | `fetch-depth`        | `1`                 | Commits of history to fetch; `0` for Beachball's checks.                                |
+| `lfs`                | `false`             | Fetch the repository's Git LFS objects, cached until one changes.                       |
 | `toolchain`          | `auto`              | As the setup action takes it.                                                           |
 | `timeout-minutes`    | `30`                | How long each runner gets.                                                              |
 | `cancel-in-progress` | `true`              | Cancel an older run on the same branch or pull request.                                 |
