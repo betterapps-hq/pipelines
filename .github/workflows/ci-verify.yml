@@ -1,0 +1,82 @@
+name: Verify
+
+# Runs a workspace's verify script on each operating system the caller lists. github/README.md shows a caller.
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: The runners to verify on, as a JSON array of labels.
+        type: string
+        default: '["ubuntu-latest"]'
+      command:
+        description: What verifies the workspace.
+        type: string
+        default: pnpm verify
+      working-directory:
+        description: The workspace's root, relative to the repository's.
+        type: string
+        default: .
+      prepare:
+        description: Shell commands run after the install and before the command, such as installing test fixtures.
+        type: string
+        default: ""
+      cache-path:
+        description: More paths to cache, one per line, such as what prepare installs.
+        type: string
+        default: ""
+      cache-key-files:
+        description: A glob of the files whose contents key that cache, such as the fixtures' lockfiles.
+        type: string
+        default: ""
+      fetch-depth:
+        description: Commits of history to fetch; 0 fetches all of it, which Beachball's checks need.
+        type: number
+        default: 1
+      toolchain:
+        description: vite-plus, pnpm, or auto, as the setup action takes it.
+        type: string
+        default: auto
+      timeout-minutes:
+        description: How long each runner gets.
+        type: number
+        default: 30
+      cancel-in-progress:
+        description: Cancel a run still going when a newer push to the same branch or pull request starts one.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # One group per runner, so the matrix's runs don't cancel each other.
+    concurrency:
+      group: ci-verify-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}-${{ matrix.os }}
+      cancel-in-progress: ${{ inputs.cancel-in-progress }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      # A reusable workflow's ./ is the caller's repository, so it names its own actions in full, at its release.
+      - uses: Fencing-Club/pipelines/github/actions/setup@v1.0.0
+        with:
+          fetch-depth: ${{ inputs.fetch-depth }}
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+      - if: inputs.cache-path != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-path }}
+          key: ci-verify-${{ runner.os }}-${{ hashFiles(inputs.cache-key-files) }}
+      - if: inputs.prepare != ''
+        run: ${{ inputs.prepare }}
+      - run: ${{ inputs.command }}

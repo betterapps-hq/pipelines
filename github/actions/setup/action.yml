@@ -1,0 +1,85 @@
+name: Set up the workspace
+description: >-
+  Checks out the repository, installs Node from .nvmrc and the workspace's package manager (Vite+ or pnpm), and installs
+  its dependencies from the lockfile, with caches.
+
+inputs:
+  checkout:
+    description: Check out the repository first. Turn it off when the job has already checked out what it needs.
+    default: "true"
+  ref:
+    description: The commit, branch or tag to check out. Empty checks out the commit that started the run.
+    default: ""
+  fetch-depth:
+    description: Commits of history to fetch; 0 fetches all of it, which Beachball's checks need.
+    default: "1"
+  working-directory:
+    description: The workspace's root, relative to the repository's.
+    default: .
+  toolchain:
+    description: >-
+      vite-plus, pnpm, or auto, which picks Vite+ when the workspace's package.json or pnpm-workspace.yaml names
+      vite-plus.
+    default: auto
+  install:
+    description: Install the workspace's dependencies from its lockfile.
+    default: "true"
+
+outputs:
+  toolchain:
+    description: The toolchain that was set up, vite-plus or pnpm.
+    value: ${{ steps.toolchain.outputs.toolchain }}
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.checkout == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ inputs.ref }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        persist-credentials: false
+
+    - id: toolchain
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+      run: |
+        if [ "$TOOLCHAIN" = auto ]; then
+          if grep -qs '"vite-plus"' package.json || grep -qs '^ *vite-plus:' pnpm-workspace.yaml; then
+            TOOLCHAIN=vite-plus
+          else
+            TOOLCHAIN=pnpm
+          fi
+        fi
+        case "$TOOLCHAIN" in
+          vite-plus | pnpm) echo "toolchain=$TOOLCHAIN" >> "$GITHUB_OUTPUT" ;;
+          *) echo "::error::toolchain is vite-plus, pnpm or auto, not '$TOOLCHAIN'." && exit 1 ;;
+        esac
+
+    # Vite+ installs Node and the package manager itself, and caches the dependencies. Its relative paths are the
+    # working directory's, and its install is frozen on CI.
+    - if: steps.toolchain.outputs.toolchain == 'vite-plus'
+      uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1.22.0
+      with:
+        working-directory: ${{ inputs.working-directory }}
+        node-version-file: .nvmrc
+        cache: "true"
+        run-install: ${{ inputs.install }}
+
+    # pnpm comes first, so setup-node can find its store to cache. Its version is package.json's packageManager.
+    - if: steps.toolchain.outputs.toolchain == 'pnpm'
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      with:
+        package_json_file: ${{ inputs.working-directory }}/package.json
+    - if: steps.toolchain.outputs.toolchain == 'pnpm'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: ${{ inputs.working-directory }}/.nvmrc
+        cache: pnpm
+        cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
+    - if: steps.toolchain.outputs.toolchain == 'pnpm' && inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: pnpm install --frozen-lockfile

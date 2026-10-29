@@ -1,0 +1,13 @@
+{
+  "name": "example-vite-plus",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify": "vp check && vp test run"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite-plus": "1.4.0"
+  },
+  "packageManager": "pnpm@12.10.1"
+}

@@ -1,0 +1,70 @@
+name: Test
+
+# Tests the templates against the example workspaces. The setup action is tested from this commit; ci-verify is called
+# from this commit too, but uses the setup action at the release it names.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint the workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
+  setup:
+    name: setup (${{ matrix.example }}, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        example: [pnpm, vite-plus]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup
+        uses: ./github/actions/setup
+        with:
+          checkout: "false"
+          working-directory: examples/${{ matrix.example }}
+      - name: Check it picked the example's toolchain
+        shell: bash
+        env:
+          TOOLCHAIN: ${{ steps.setup.outputs.toolchain }}
+          EXAMPLE: ${{ matrix.example }}
+        run: test "$TOOLCHAIN" = "$EXAMPLE"
+      - shell: bash
+        working-directory: examples/${{ matrix.example }}
+        run: pnpm verify
+
+  ci-verify:
+    name: ci-verify (${{ matrix.example }})
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [pnpm, vite-plus]
+    uses: ./.github/workflows/ci-verify.yml
+    with:
+      os: '["ubuntu-latest", "windows-latest", "macos-latest"]'
+      working-directory: examples/${{ matrix.example }}
+      prepare: echo prepared > prepared.txt
+      cache-path: examples/${{ matrix.example }}/prepared.txt
+      cache-key-files: examples/${{ matrix.example }}/package.json
+      command: test -f prepared.txt && pnpm verify
