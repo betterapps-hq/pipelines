@@ -1,6 +1,6 @@
 # Pipelines
 
-Shared CI/CD templates for the repositories under `Fencing-Club` and `AndrewCraswell`: Parity, Buildkit, Better Apps,
+Shared CI/CD templates for the repositories under `betterapps-hq` and `AndrewCraswell`: Parity, Buildkit, Better Apps,
 Copacker and the rest. Each repository keeps thin pipelines of its own, one per stage, that call these templates, so a
 fix lands in one place instead of being copied between repositories.
 
@@ -46,8 +46,10 @@ Cloud services the templates need come from Terraform, never by hand or from a p
 
 - **Callers pin a full commit SHA,** with the version in a comment, and Dependabot moves the pins. A pull request can
   then never run a changed copy of a template.
-- **Templates name their own actions in full, at the release they ship in:**
-  `Fencing-Club/pipelines/github/actions/setup@v1.1.0`. In a reusable workflow, `./` is the caller's repository.
+- **Templates name their own actions in full, pinned to a release's commit,** as they pin third-party actions:
+  `betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.1.0`. In a reusable workflow, `./` is the caller's
+  repository. A change to an action is tested directly, and reaches the templates when Dependabot moves their pin to the
+  release that has it.
 - **Secrets are passed by name,** never `secrets: inherit`, and each job asks for the least permissions it needs.
 - **Templates use third-party actions pinned by commit,** with the version in a comment, which Dependabot moves.
 - **Each template documents its inputs, secrets, permissions and an example caller** in its system's README.
@@ -65,10 +67,11 @@ The repository is on Vite+, as its callers are: `pnpm format` formats the workfl
 
 ## Releasing
 
-Releases are tagged `vMAJOR.MINOR.PATCH`, and nothing moves a tag once it's pushed.
+`main` takes changes only through pull requests, with the `Tests pass` check and every review thread resolved. Releases
+are tagged `vMAJOR.MINOR.PATCH` on `main`, and a tag never moves or goes away once it's pushed.
 
-1. In one commit on `main`, change every `Fencing-Club/pipelines/...@v<old>` reference in the templates to the new
-   version.
-2. Tag that commit with the new version, push the commit and the tag together, and publish a GitHub release from the tag
-   with what changed.
-3. Callers move to the tag's commit SHA, by hand or through Dependabot.
+1. Merge the pull requests that make the release.
+2. Tag `main`'s commit with the new version, push the tag, and publish a GitHub release from it with what changed and
+   its commit SHA.
+3. Dependabot moves the templates' pins on their own actions to the new release, and callers' pins on the templates, in
+   pull requests of their own.

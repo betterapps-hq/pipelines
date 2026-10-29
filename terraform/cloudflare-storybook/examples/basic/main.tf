@@ -30,12 +30,12 @@ terraform {
 provider "cloudflare" {}
 
 provider "github" {
-  owner = "Fencing-Club"
+  owner = "betterapps-hq"
 }
 
 module "storybook" {
   # A caller outside this repository pins a commit:
-  # source = "git::https://github.com/Fencing-Club/pipelines.git//terraform/cloudflare-storybook?ref=<commit sha>"
+  # source = "git::https://github.com/betterapps-hq/pipelines.git//terraform/cloudflare-storybook?ref=<commit sha>"
   source = "../.."
 
   account_id  = "0123456789abcdef0123456789abcdef"

@@ -8,6 +8,3 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-    # Templates name this repository's own actions at the release they ship in, which a release moves.
-    ignore:
-      - dependency-name: Fencing-Club/pipelines
