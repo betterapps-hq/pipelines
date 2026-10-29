@@ -116,10 +116,58 @@ jobs:
           terraform_version: 1.16.6
           terraform_wrapper: false
       - run: terraform fmt -check -recursive terraform
-      - working-directory: terraform/cloudflare-storybook/examples/basic
-        run: terraform init -backend=false -input=false -lockfile=readonly
-      - working-directory: terraform/cloudflare-storybook/examples/basic
-        run: terraform validate
+      # Every module has an examples/basic, a root project with a lockfile, which validates without credentials.
+      - name: Validate each module's example
+        shell: bash
+        run: |
+          for example in terraform/*/examples/basic; do
+            echo "::group::$example"
+            terraform -chdir="$example" init -backend=false -input=false -lockfile=readonly
+            terraform -chdir="$example" validate
+            echo "::endgroup::"
+          done
+
+  # Nothing here has Terraform state to plan against, so these check the templates skip planning and applying with a
+  # notice rather than fail. The plan still checks the example's formatting and validates it. The test environment
+  # exists only for that.
+  terraform-plan:
+    name: terraform-plan (no credentials)
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/terraform-plan.yml
+    with:
+      working-directory: terraform/github-repository-rules/examples/basic
+      fmt-path: ../..
+      state-bucket: example-terraform-state
+      state-endpoint: https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com
+
+  terraform-plan-skipped:
+    name: Check terraform-plan skipped
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULT: ${{ needs.terraform-plan.outputs.result }}
+        run: test "$RESULT" = skipped
+
+  terraform-apply:
+    name: terraform-apply (no environment settings)
+    uses: ./.github/workflows/terraform-apply.yml
+    with:
+      environment: terraform-test
+      working-directory: terraform/github-repository-rules/examples/basic
+      state-bucket: example-terraform-state
+      state-endpoint: https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com
+
+  terraform-apply-skipped:
+    name: Check terraform-apply skipped
+    needs: terraform-apply
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULT: ${{ needs.terraform-apply.outputs.result }}
+        run: test "$RESULT" = skipped
 
   # This repository's own formatting and lint, through its own template.
   verify:
@@ -131,7 +179,18 @@ jobs:
     name: Tests pass
     if: always()
     needs:
-      [lint, setup, ci-verify, publish-storybook, publish-storybook-skipped, unpublish-storybook, terraform, verify]
+      - lint
+      - setup
+      - ci-verify
+      - publish-storybook
+      - publish-storybook-skipped
+      - unpublish-storybook
+      - terraform
+      - terraform-plan
+      - terraform-plan-skipped
+      - terraform-apply
+      - terraform-apply-skipped
+      - verify
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
