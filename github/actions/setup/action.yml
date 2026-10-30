@@ -91,14 +91,21 @@ runs:
         dissociate: ${{ inputs.dissociate }}
     # On Windows, Blacksmith's checkout deletes its credentials file but leaves the includeIf naming it, since it unsets
     # the entry by a path whose backslashes Git reads as a pattern. It names nothing, but the LFS pull would take it for
-    # a caller's credentials, so includes of files that don't exist go.
+    # a caller's credentials, so includes of checkout's credentials files that no longer exist go. Each entry is read
+    # whole, since the key holds the workspace's path and either can have spaces. Git Bash mustn't rewrite the container
+    # paths it also writes, such as /github/runner_temp, or Git wouldn't find them to unset.
     - if: steps.checkout.outputs.action == 'blacksmith'
       shell: bash
+      env:
+        MSYS_NO_PATHCONV: "1"
       run: |
-        includes=$(git config --local --get-regexp '^includeif\.gitdir:' || true)
-        while read -r key path; do
-          if [ -n "$key" ] && [ ! -e "$path" ]; then git config --local --fixed-value --unset "$key" "$path"; fi
-        done <<< "$includes"
+        while IFS= read -r -d '' entry; do
+          key=${entry%%$'\n'*}
+          path=${entry#*$'\n'}
+          case "${path//\\//}" in
+            */git-credentials-*.config) [ -e "$path" ] || git config --local --fixed-value --unset "$key" "$path" ;;
+          esac
+        done < <(git config --local --null --get-regexp '^includeif\.gitdir:' || true)
 
     # LFS objects are cached by the list of them and the fetch filters, so they're downloaded only when one changes.
     # Git hashes them, since every system has it. The cache is where Git LFS keeps its objects, which it reports, and
