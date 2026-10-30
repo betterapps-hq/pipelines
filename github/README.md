@@ -192,23 +192,24 @@ A reusable workflow. It runs the workspace's `pnpm verify` on each operating sys
 of its own, so one failing doesn't stop the others. A newer push to the same branch or pull request cancels the run
 before it.
 
-| Input                | Default             | What it's for                                                                           |
-| -------------------- | ------------------- | --------------------------------------------------------------------------------------- |
-| `os`                 | `["ubuntu-latest"]` | The runners to verify on, as a JSON array of labels.                                    |
-| `command`            | `pnpm verify`       | What verifies the workspace.                                                            |
-| `working-directory`  | `.`                 | The workspace's root, relative to the repository's.                                     |
-| `prepare`            | (empty)             | Shell commands run after the install and before `command`.                              |
-| `cache-path`         | (empty)             | More paths to cache, one per line, relative to the repository: what `prepare` installs. |
-| `cache-key-files`    | (empty)             | A glob of the files that key that cache, relative to the repository.                    |
-| `fetch-depth`        | `1`                 | Commits of history to fetch; `0` for Beachball's checks.                                |
-| `lfs`                | `false`             | Fetch the repository's Git LFS objects, cached until one changes.                       |
-| `toolchain`          | `auto`              | As the setup action takes it.                                                           |
-| `timeout-minutes`    | `30`                | How long each runner gets.                                                              |
-| `cancel-in-progress` | `true`              | Cancel an older run on the same branch or pull request.                                 |
-| `concurrency-key`    | (empty)             | What runs are grouped by in place of the branch or pull request, such as the run's ID.  |
-| `env`                | (empty)             | `NAME=value` lines set before the install, for every step. Not for secrets.             |
-| `node-options`       | (empty)             | `NODE_OPTIONS` for `prepare` and `command`, such as `--max-old-space-size=8192`.        |
-| `vite-task-cache`    | `false`             | Keep Vite+'s task cache between runs, restored from the newest. Only `vp run` uses it.  |
+| Input                 | Default             | What it's for                                                                           |
+| --------------------- | ------------------- | --------------------------------------------------------------------------------------- |
+| `os`                  | `["ubuntu-latest"]` | The runners to verify on, as a JSON array of labels.                                    |
+| `command`             | `pnpm verify`       | What verifies the workspace.                                                            |
+| `working-directory`   | `.`                 | The workspace's root, relative to the repository's.                                     |
+| `prepare`             | (empty)             | Shell commands run after the install and before `command`.                              |
+| `cache-path`          | (empty)             | More paths to cache, one per line, relative to the repository: what `prepare` installs. |
+| `cache-key-files`     | (empty)             | A glob of the files that key that cache, relative to the repository.                    |
+| `fetch-depth`         | `1`                 | Commits of history to fetch; `0` for Beachball's checks.                                |
+| `lfs`                 | `false`             | Fetch the repository's Git LFS objects, cached until one changes.                       |
+| `toolchain`           | `auto`              | As the setup action takes it.                                                           |
+| `timeout-minutes`     | `30`                | How long each runner gets.                                                              |
+| `cancel-in-progress`  | `true`              | Cancel an older run on the same branch or pull request.                                 |
+| `concurrency-key`     | (empty)             | What runs are grouped by in place of the branch or pull request, such as the run's ID.  |
+| `env`                 | (empty)             | `NAME=value` lines set before the install, for every step. Not for secrets.             |
+| `node-options`        | (empty)             | `NODE_OPTIONS` for `prepare` and `command`, such as `--max-old-space-size=8192`.        |
+| `vite-task-cache`     | `false`             | Keep Vite+'s task cache between runs, restored from the newest. Only `vp run` uses it.  |
+| `vite-task-cache-key` | `verify`            | Tells this call's task caches from another call's on the same system and workspace.     |
 
 | Secret                             | What it's for                                                                    |
 | ---------------------------------- | -------------------------------------------------------------------------------- |
@@ -225,8 +226,10 @@ Permissions: `contents: read`.
 - **`vite-task-cache` helps only tasks run with `vp run` that cache:** those defined in `vite.config.ts`, and
   `package.json` scripts run with `--cache`, such as `vp run --cache verify`. `vp check` or `pnpm verify` run directly
   don't use Vite+'s task cache. On Windows, tasks need two inputs left out to replay, as
-  [the action's section](#on-windows) shows. ci-verify keeps the cache with steps of its own, under keys without the
-  job's, until a release moves it onto [the action](#vite-task-cache).
+  [the action's section](#on-windows) shows. ci-verify keeps it with [the action](#vite-task-cache), so two calls in one
+  workflow that run different tasks on one system, such as a verify on every system and a type check on one, give each a
+  `vite-task-cache-key` of its own; otherwise the newer one's cache is restored for both. The first run after the key
+  changes from v1.5.0's has nothing to restore.
 - **`concurrency-key`** changes what a newer run cancels. `${{ github.event.pull_request.number || github.run_id }}`
   keeps cancelling superseded pull request runs while runs on `main` never wait on each other.
 - **Its checks are named `<calling job> / Verify (<runner>)`.** Where a branch rule or other automation requires a check
