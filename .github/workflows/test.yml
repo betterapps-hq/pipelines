@@ -1,7 +1,7 @@
 name: Test
 
-# Tests the templates against the example workspaces. The setup action is tested from this commit; ci-verify is called
-# from this commit too, but uses the setup action at the release it names.
+# Tests the templates against the example workspaces. The actions are tested from this commit; the reusable workflows
+# are called from this commit too, but use the actions at the release they name.
 on:
   pull_request:
   push:
@@ -179,6 +179,104 @@ jobs:
             "@pipelines-example/core @pipelines-example/app @pipelines-example/cli"
           test "$PUBLISHED" = "false false"
 
+  # The web templates skip with a notice too. web-test exists only for that, and the commands fail if they run.
+  preview-web:
+    name: preview-web (no environment settings)
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/preview-web.yml
+    with:
+      environment: web-test
+      preview-name: pr-0
+      working-directory: examples/pnpm
+      neon: true
+      build-command: exit 1
+      migrate-command: exit 1
+      deploy-command: exit 1
+
+  preview-web-skipped:
+    name: Check preview-web skipped
+    needs: preview-web
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          URL: ${{ needs.preview-web.outputs.url }}
+          NEON_BRANCH: ${{ needs.preview-web.outputs.neon-branch-id }}
+        run: test -z "$URL$NEON_BRANCH"
+
+  preview-web-cleanup:
+    name: preview-web-cleanup (no environment settings)
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ./.github/workflows/preview-web-cleanup.yml
+    with:
+      environment: web-test
+      preview-name: pr-0
+      neon: true
+      delete-command: exit 1
+
+  cd-web-deploy:
+    name: cd-web-deploy (no environment settings)
+    uses: ./.github/workflows/cd-web-deploy.yml
+    with:
+      environment: web-test
+      working-directory: examples/pnpm
+      build-command: exit 1
+      migrate-command: exit 1
+
+  # After cd-web-deploy, so web-test has a deployment that skipped, which mustn't count as something to promote.
+  cd-web-promote:
+    name: cd-web-promote (nothing deployed)
+    needs: cd-web-deploy
+    permissions:
+      contents: read
+      deployments: read
+    uses: ./.github/workflows/cd-web-promote.yml
+    with:
+      environment: web-test
+      from-environment: web-test
+      working-directory: examples/pnpm
+      build-command: exit 1
+
+  cd-web-skipped:
+    name: Check cd-web-deploy and cd-web-promote skipped
+    needs: [cd-web-deploy, cd-web-promote]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DEPLOYED: ${{ needs.cd-web-deploy.outputs.url }}${{ needs.cd-web-deploy.outputs.commit }}
+          PROMOTED: ${{ needs.cd-web-promote.outputs.commit }}${{ needs.cd-web-promote.outputs.url }}
+        run: test -z "$DEPLOYED$PROMOTED"
+
+  # The comment action from this commit, looking for a comment no run writes and, told not to create one, leaving it so.
+  pr-comment:
+    name: pr-comment (${{ matrix.os }})
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: comment
+        uses: ./github/actions/pr-comment
+        with:
+          marker: "<!-- pipelines test ${{ github.run_id }} -->"
+          body: Never written.
+          create: "false"
+      - shell: bash
+        env:
+          ID: ${{ steps.comment.outputs.comment-id }}
+        run: test -z "$ID"
+
   terraform:
     name: Validate the Terraform modules
     runs-on: ubuntu-latest
@@ -264,6 +362,13 @@ jobs:
       - cd-npm-publish
       - cd-npm-publish-public
       - release-checked
+      - preview-web
+      - preview-web-skipped
+      - preview-web-cleanup
+      - cd-web-deploy
+      - cd-web-promote
+      - cd-web-skipped
+      - pr-comment
       - terraform
       - terraform-plan
       - terraform-plan-skipped

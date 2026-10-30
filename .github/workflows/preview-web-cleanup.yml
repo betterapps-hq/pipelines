@@ -1,0 +1,270 @@
+name: Clean up a web app's preview
+
+# Deletes what preview-web published for a pull request, such as a closed one's: the Worker preview, or whatever the
+# caller's delete command removes, and the preview's Neon branch. It marks the comment removed. It skips with a notice
+# when the environment has no settings, and keeps a preview whose pull request has reopened. github/README.md shows a
+# caller.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub environment the preview was published with.
+        type: string
+        default: preview
+      preview-name:
+        description: The preview's name. Empty is pr-<the pull request's number>.
+        type: string
+        default: ""
+      working-directory:
+        description: The workspace preview-web was given, which its comment's marker names.
+        type: string
+        default: .
+      app-directory:
+        description: The app directory preview-web was given, which its comment's marker names.
+        type: string
+        default: .
+      neon:
+        description: Delete the preview's Neon branch too.
+        type: boolean
+        default: false
+      delete-command:
+        description: >-
+          What deletes the preview instead of Wrangler, for one a deploy command published. It runs in the working
+          directory of the default branch, never the pull request's code.
+        type: string
+        default: ""
+      comment:
+        description: On a pull request, mark preview-web's comment removed.
+        type: boolean
+        default: true
+      toolchain:
+        description: vite-plus, pnpm, or auto, as the setup action takes it, for the delete command.
+        type: string
+        default: auto
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: 4.148.0
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  cleanup:
+    name: Clean up ${{ inputs.preview-name || format('pr-{0}', github.event.pull_request.number) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      # Write, to mark the comment removed. The caller's job has to grant it too.
+      pull-requests: write
+    # The same group as preview-web's, so a cleanup waits for a publish still running rather than racing it.
+    concurrency:
+      group: >-
+        preview-web-${{ inputs.environment }}-${{ inputs.preview-name || github.event.pull_request.number }}-${{
+        inputs.working-directory }}-${{ inputs.app-directory }}
+      cancel-in-progress: false
+    # An explicit bash runs with pipefail, so a command's own failure reaches the if.
+    defaults:
+      run:
+        shell: bash
+    env:
+      PREVIEW_NAME: ${{ inputs.preview-name || format('pr-{0}', github.event.pull_request.number) }}
+    steps:
+      - id: ready
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          HAS_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN != '' }}
+          WORKER: ${{ vars.WEB_WORKER }}
+          CUSTOM_DELETE: ${{ inputs.delete-command != '' }}
+          NEON: ${{ inputs.neon }}
+          NEON_PROJECT: ${{ vars.NEON_PROJECT_ID }}
+          HAS_NEON_KEY: ${{ secrets.NEON_API_KEY != '' }}
+        run: |
+          if ! [[ "$PREVIEW_NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "::error::The preview's name, '$PREVIEW_NAME', isn't lowercase letters, digits and hyphens. Give preview-name, or run on a pull request."
+            exit 1
+          fi
+          missing=()
+          [ -n "$ACCOUNT" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [ "$HAS_TOKEN" = true ] || missing+=(WEB_CLOUDFLARE_API_TOKEN)
+          [ "$CUSTOM_DELETE" = true ] || [ -n "$WORKER" ] || missing+=(WEB_WORKER)
+          if [ "$NEON" = true ]; then
+            [ -n "$NEON_PROJECT" ] || missing+=(NEON_PROJECT_ID)
+            [ "$HAS_NEON_KEY" = true ] || missing+=(NEON_API_KEY)
+          fi
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::notice::Skipped: the $ENVIRONMENT environment has no ${missing[*]} yet, so nothing was published with it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A pull request reopened before this ran is being previewed again.
+      - if: steps.ready.outputs.ready == 'true'
+        id: closed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          state=closed
+          [ -z "$PR" ] || state=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .state)
+          if [ "$state" = open ]; then
+            echo "::notice::Kept: pull request $PR is open again."
+            echo "closed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "closed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The default branch's code, since a closed pull request's may not be safe to run.
+      - if: steps.closed.outputs.closed == 'true' && inputs.delete-command != ''
+        uses: betterapps-hq/pipelines/github/actions/setup@c3b85f070cf22fbf7a4dae841461f82e2b16ea20 # v1.2.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+      # As preview-web gives its commands the environment's settings.
+      - if: steps.closed.outputs.closed == 'true' && inputs.delete-command != ''
+        name: Give the command the environment's settings
+        env:
+          COMMAND_ENV: ${{ vars.WEB_COMMAND_ENV }}
+          COMMAND_SECRETS: ${{ secrets.WEB_COMMAND_SECRETS }}
+        run: |
+          for setting in COMMAND_ENV COMMAND_SECRETS; do
+            json=${!setting}
+            [ -n "$json" ] || continue
+            if ! jq -e 'type == "object" and all(.[]; type == "string")' <<< "$json" > /dev/null 2>&1; then
+              echo "::error::WEB_$setting isn't a JSON object of strings."
+              exit 1
+            fi
+            while IFS= read -r key; do
+              if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                echo "::error::WEB_$setting has a key that isn't an environment variable's name."
+                exit 1
+              fi
+              value=$(jq -r --arg key "$key" '.[$key]' <<< "$json")
+              if [ "$setting" = COMMAND_SECRETS ]; then
+                while IFS= read -r line; do
+                  [ -z "$line" ] || echo "::add-mask::$line"
+                done <<< "$value"
+              fi
+              delimiter="EOF_$(openssl rand -hex 16)"
+              printf '%s<<%s\n%s\n%s\n' "$key" "$delimiter" "$value" "$delimiter" >> "$GITHUB_ENV"
+            done < <(jq -r 'keys[]' <<< "$json")
+          done
+      - if: steps.closed.outputs.closed == 'true' && inputs.delete-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.delete-command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WEB_WORKER: ${{ vars.WEB_WORKER }}
+        run: eval "$COMMAND"
+
+      - if: steps.closed.outputs.closed == 'true' && inputs.delete-command == ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # A pull request closed before its preview was published has nothing to delete. While the Worker is being
+      # deployed, as merging a pull request often starts, Cloudflare can report it missing, so that error is retried.
+      - if: steps.closed.outputs.closed == 'true' && inputs.delete-command == ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER: ${{ vars.WEB_WORKER }}
+        run: |
+          for _ in 1 2 3 4 5; do
+            if npx --yes "wrangler@$WRANGLER_VERSION" preview delete --worker-name "$WORKER" --name "$PREVIEW_NAME" \
+              --skip-confirmation 2>&1 | tee delete.log; then
+              exit 0
+            fi
+            if grep -q "Preview not found" delete.log; then
+              echo "No preview named $PREVIEW_NAME to delete."
+              exit 0
+            fi
+            grep -q "Worker does not exist" delete.log || exit 1
+            echo "The Worker is being deployed; retrying in 30 seconds."
+            sleep 30
+          done
+          exit 1
+
+      # The same as the neon-branch action's delete, which this moves to once a release has it. It deletes only the
+      # branch with exactly the preview's name, made from the parent, that isn't the default or protected.
+      # Even when deleting the Worker preview failed: the branch is a resource of its own. The comment below waits for both.
+      - if: "!cancelled() && steps.closed.outputs.closed == 'true' && inputs.neon"
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          PARENT: ${{ vars.NEON_PARENT_BRANCH_ID }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          api="https://console.neon.tech/api/v2/projects/$PROJECT_ID"
+          response="$RUNNER_TEMP/neon.json"
+          request() {
+            for _ in $(seq 1 30); do
+              status=$(curl -sS --max-time 60 --retry 3 -o "$response" -w '%{http_code}' -X "$1" \
+                -H "Authorization: Bearer $NEON_API_KEY" "$api/$2")
+              [ "$status" = 423 ] || return 0
+              sleep 2
+            done
+          }
+          succeeded() {
+            case "$status" in
+              2??) ;;
+              *) fail "Neon couldn't $1: HTTP $status. $(jq -r '.message // empty' "$response" 2>/dev/null || true)" ;;
+            esac
+          }
+
+          found=""
+          cursor=""
+          for _ in $(seq 1 100); do
+            request GET "branches?search=$PREVIEW_NAME&limit=100${cursor:+&cursor=$cursor}"
+            succeeded "list the branches"
+            found=$(jq -c --arg name "$PREVIEW_NAME" 'first(.branches[] | select(.name == $name)) // empty' "$response")
+            cursor=$(jq -r '.pagination.next // empty | @uri' "$response")
+            [ -z "$found" ] && [ -n "$cursor" ] || break
+          done
+          # Past 10,000 matches it stops rather than guess, which could make a second branch or miss one to delete.
+          if [ -z "$found" ] && [ -n "$cursor" ]; then
+            fail "Over 10,000 branches have names like $PREVIEW_NAME, so it can't tell whether one is there."
+          fi
+          if [ -z "$found" ]; then
+            echo "No Neon branch named $PREVIEW_NAME to delete."
+            exit 0
+          fi
+          if ! jq -e --arg parent "$PARENT" \
+            '(.default | not) and (.protected != true) and ($parent == "" or .parent_id == $parent)' <<< "$found" > /dev/null; then
+            fail "The branch named $PREVIEW_NAME is the default or protected${PARENT:+, or not made from $PARENT}, so it's left alone."
+          fi
+          id=$(jq -r .id <<< "$found")
+          # Deleting the Worker preview can take minutes of retries; a pull request reopened meanwhile keeps its data.
+          if [ -n "$PR" ] && [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .state)" = open ]; then
+            echo "::notice::Kept the Neon branch $PREVIEW_NAME: pull request $PR is open again."
+            exit 0
+          fi
+          request DELETE "branches/$id"
+          [ "$status" = 404 ] || succeeded "delete the branch $PREVIEW_NAME ($id)"
+          echo "Deleted the Neon branch $PREVIEW_NAME ($id)."
+
+      - if: steps.closed.outputs.closed == 'true' && inputs.comment && github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          MARKER:
+            "<!-- preview-web ${{ inputs.environment }} ${{ inputs.working-directory }} ${{ inputs.app-directory }} -->"
+        run: |
+          # shellcheck disable=SC2016 # $ENV is jq's, not the shell's.
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($ENV.MARKER))) | .id' | sed -n 1p)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" \
+              -f body="$MARKER
+          **Preview:** removed when the pull request closed." > /dev/null
+          fi

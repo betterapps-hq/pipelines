@@ -1,0 +1,191 @@
+name: Neon branch
+description: >-
+  Makes a Neon database branch by name, such as a pull request's, or reuses the one already there, and gives its
+  connection URLs; or deletes it. It only reuses or deletes a branch with exactly that name, from the parent given, that
+  isn't the project's default or protected.
+
+inputs:
+  api-key:
+    description: A Neon API key that can manage the project's branches.
+    required: true
+  project-id:
+    description: The Neon project the branch is in.
+    required: true
+  branch:
+    description: The branch's name, such as pr-123.
+    required: true
+  parent-branch-id:
+    description: >-
+      The ID of the branch to copy, such as staging's. Empty copies the project's default branch, and reuses or deletes
+      a branch with the name whatever its parent.
+    default: ""
+  database:
+    description: The database the connection URLs name. Required unless deleting.
+    default: ""
+  role:
+    description: The role the connection URLs sign in as. Required unless deleting.
+    default: ""
+  expires-in-days:
+    description: >-
+      Days until Neon deletes the branch itself, a backstop for a cleanup that never runs. Reusing the branch starts the
+      count again. 0 makes a branch without an expiry, and leaves a reused branch's expiry unchanged.
+    default: "7"
+  delete:
+    description: Delete the branch instead. A branch that isn't there counts as deleted.
+    default: "false"
+
+outputs:
+  branch-id:
+    description: The branch's ID.
+    value: ${{ steps.branch.outputs.branch-id }}
+  created:
+    description: true when this call made the branch, false when it was already there.
+    value: ${{ steps.branch.outputs.created }}
+  database-url:
+    description: A direct connection URL, for migrations. Masked in logs.
+    value: ${{ steps.branch.outputs.database-url }}
+  pooled-database-url:
+    description: A connection URL through Neon's connection pooler, for the app. Masked in logs.
+    value: ${{ steps.branch.outputs.pooled-database-url }}
+
+runs:
+  using: composite
+  steps:
+    - id: branch
+      shell: bash
+      env:
+        NEON_API_KEY: ${{ inputs.api-key }}
+        PROJECT_ID: ${{ inputs.project-id }}
+        BRANCH: ${{ inputs.branch }}
+        PARENT: ${{ inputs.parent-branch-id }}
+        DATABASE: ${{ inputs.database }}
+        ROLE: ${{ inputs.role }}
+        EXPIRES_IN_DAYS: ${{ inputs.expires-in-days }}
+        DELETE: ${{ inputs.delete }}
+      run: |
+        fail() {
+          echo "::error::$1"
+          exit 1
+        }
+        # jq on Windows ends its lines with CRLF, and the CR would stay on every value read back.
+        jq() { command jq "$@" | tr -d '\r'; }
+        [ -n "$NEON_API_KEY" ] || fail "api-key is empty."
+        [[ "$PROJECT_ID" =~ ^[a-z0-9-]+$ ]] || fail "project-id is a Neon project ID, such as calm-sun-123456."
+        [[ "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "branch is letters, digits, dots, underscores and hyphens."
+        [ -z "$PARENT" ] || [[ "$PARENT" =~ ^br-[a-z0-9-]+$ ]] || fail "parent-branch-id is a branch ID, such as br-cool-wind-123456."
+        [[ "$EXPIRES_IN_DAYS" =~ ^[0-9]+$ ]] || fail "expires-in-days is a whole number of days."
+        if [ "$DELETE" != true ] && { [ -z "$DATABASE" ] || [ -z "$ROLE" ]; }; then
+          fail "database and role are needed to make a branch."
+        fi
+
+        api="https://console.neon.tech/api/v2/projects/$PROJECT_ID"
+        response="$RUNNER_TEMP/neon-$BRANCH.json"
+        # Calls Neon's API, leaving the body in $response and the HTTP status in $status. While another operation holds
+        # the branch, Neon answers 423, so that's retried.
+        request() {
+          for _ in $(seq 1 30); do
+            if [ -n "${3:-}" ]; then
+              status=$(curl -sS --max-time 60 --retry 3 -o "$response" -w '%{http_code}' -X "$1" \
+                -H "Authorization: Bearer $NEON_API_KEY" -H "Content-Type: application/json" --data "$3" "$api/$2")
+            else
+              status=$(curl -sS --max-time 60 --retry 3 -o "$response" -w '%{http_code}' -X "$1" \
+                -H "Authorization: Bearer $NEON_API_KEY" "$api/$2")
+            fi
+            [ "$status" = 423 ] || return 0
+            sleep 2
+          done
+        }
+        succeeded() {
+          case "$status" in
+            2??) ;;
+            *) fail "Neon couldn't $1: HTTP $status. $(jq -r '.message // empty' "$response" 2>/dev/null || true)" ;;
+          esac
+        }
+
+        # Finds the branch with exactly this name, into $found. Neon's search also matches longer names, such as pr-12
+        # matching pr-123, so the results are filtered and paged through.
+        found=""
+        cursor=""
+        for _ in $(seq 1 100); do
+          request GET "branches?search=$BRANCH&limit=100${cursor:+&cursor=$cursor}"
+          succeeded "list the branches"
+          found=$(jq -c --arg name "$BRANCH" 'first(.branches[] | select(.name == $name)) // empty' "$response")
+          cursor=$(jq -r '.pagination.next // empty | @uri' "$response")
+          [ -z "$found" ] && [ -n "$cursor" ] || break
+        done
+        # Past 10,000 matches it stops rather than guess, which could make a second branch or miss one to delete.
+        if [ -z "$found" ] && [ -n "$cursor" ]; then
+          fail "Over 10,000 branches have names like $BRANCH, so it can't tell whether one is there."
+        fi
+        if [ -n "$found" ] && ! jq -e --arg parent "$PARENT" \
+          '(.default | not) and (.protected != true) and ($parent == "" or .parent_id == $parent)' <<< "$found" > /dev/null; then
+          fail "The branch named $BRANCH is the default or protected${PARENT:+, or not made from $PARENT}, so it's left alone."
+        fi
+        id=$(jq -r '.id // empty' <<< "$found")
+
+        if [ "$DELETE" = true ]; then
+          if [ -z "$id" ]; then
+            echo "No branch named $BRANCH to delete."
+          else
+            request DELETE "branches/$id"
+            [ "$status" = 404 ] || succeeded "delete the branch $BRANCH ($id)"
+            echo "Deleted the branch $BRANCH ($id)."
+          fi
+          echo "branch-id=$id" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        expires=""
+        if [ "$EXPIRES_IN_DAYS" != 0 ]; then
+          expires=$(jq -rn --argjson days "$EXPIRES_IN_DAYS" 'now + $days * 86400 | floor | todate')
+        fi
+        if [ -z "$id" ]; then
+          request POST branches "$(jq -nc --arg name "$BRANCH" --arg parent "$PARENT" --arg expires "$expires" '{
+            branch: ({ name: $name }
+              + (if $parent == "" then {} else { parent_id: $parent } end)
+              + (if $expires == "" then {} else { expires_at: $expires } end)),
+            endpoints: [{ type: "read_write" }]
+          }')"
+          succeeded "make the branch $BRANCH"
+          id=$(jq -r .branch.id "$response")
+          created=true
+          echo "Made the branch $BRANCH ($id)${expires:+, which Neon deletes at $expires}."
+        else
+          created=false
+          if [ -n "$expires" ]; then
+            request PATCH "branches/$id" "$(jq -nc --arg expires "$expires" '{ branch: { expires_at: $expires } }')"
+            succeeded "move the branch's expiry"
+          fi
+          echo "Reusing the branch $BRANCH ($id)${expires:+, which Neon now deletes at $expires}."
+        fi
+
+        # A new branch is copied in the background; connecting before it's ready can fail.
+        for _ in $(seq 1 60); do
+          request GET "branches/$id"
+          succeeded "read the branch"
+          [ "$(jq -r .branch.current_state "$response")" = ready ] && break
+          sleep 2
+        done
+        [ "$(jq -r .branch.current_state "$response")" = ready ] || fail "The branch $BRANCH wasn't ready after two minutes."
+
+        # The URLs carry the role's password, so they're masked before anything can print them.
+        connection_url() {
+          request GET "connection_uri?$(jq -rn --arg id "$id" --arg db "$DATABASE" --arg role "$ROLE" --arg pooled "$1" \
+            '"branch_id=\($id | @uri)&database_name=\($db | @uri)&role_name=\($role | @uri)&pooled=\($pooled)"')"
+          succeeded "get the branch's connection URL"
+          url=$(jq -r .uri "$response")
+          rm -f "$response"
+          echo "::add-mask::$url"
+          password=$(jq -rn --arg url "$url" '$url | capture("^[^:]+://[^:/@]+:(?<p>[^@]+)@").p // empty')
+          [ -z "$password" ] || echo "::add-mask::$password"
+        }
+        connection_url false
+        direct=$url
+        connection_url true
+        rm -f "$response"
+        {
+          echo "branch-id=$id"
+          echo "created=$created"
+          echo "database-url=$direct"
+          echo "pooled-database-url=$url"
+        } >> "$GITHUB_OUTPUT"

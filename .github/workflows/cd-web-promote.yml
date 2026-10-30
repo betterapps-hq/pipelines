@@ -1,0 +1,285 @@
+name: Promote a web app
+
+# Deploys the commit one environment has, staging by default, to the next, production by default, waiting on that
+# environment's protection rules. Staging and production are separate Workers with their own settings and databases, so
+# a Worker version can't move between them: the commit is built again for production, from the same lockfile, and its
+# migrations run before the deploy, as cd-web-deploy does. github/README.md says why and shows a caller.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub environment to promote to.
+        type: string
+        default: production
+      from-environment:
+        description: The GitHub environment whose deployed commit is promoted.
+        type: string
+        default: staging
+      commit:
+        description: >-
+          The full SHA to promote, which has to have deployed to from-environment. Empty is the commit from-environment
+          last deployed.
+        type: string
+        default: ""
+      working-directory:
+        description: The workspace's root, relative to the repository's. The commands run here.
+        type: string
+        default: .
+      app-directory:
+        description: Where Wrangler runs and finds the Worker's config, relative to the working directory.
+        type: string
+        default: .
+      build-command:
+        description: What builds the app for the environment, run in the working directory. Empty skips the build.
+        type: string
+        default: pnpm build
+      migrate-command:
+        description: What migrates the environment's database, run in the working directory before the deploy.
+        type: string
+        default: ""
+      seed-command:
+        description: What seeds the environment's database after its migrations, run in the working directory.
+        type: string
+        default: ""
+      deploy-command:
+        description: >-
+          What deploys instead of Wrangler, run in the working directory. It can report the URL by appending url=<url>
+          to $GITHUB_OUTPUT; WEB_URL wins over it.
+        type: string
+        default: ""
+      toolchain:
+        description: vite-plus, pnpm, or auto, as the setup action takes it.
+        type: string
+        default: auto
+    outputs:
+      commit:
+        description: The commit promoted; empty when it was skipped.
+        value: ${{ jobs.deploy.outputs.commit }}
+      url:
+        description: The environment's URL; empty when the deploy was skipped.
+        value: ${{ jobs.deploy.outputs.url }}
+      version-id:
+        description: The Worker version Wrangler deployed; empty for a deploy command.
+        value: ${{ jobs.deploy.outputs.version-id }}
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: 4.148.0
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  # GitHub records a deployment of the run's commit for each job in an environment. cd-web-deploy gives one a URL only
+  # once that commit has deployed, so a success with a URL is a commit that reached the environment, and neither a skip
+  # nor a deploy of another ref counts.
+  staged:
+    name: Find what ${{ inputs.from-environment }} has
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      commit: ${{ steps.find.outputs.commit }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM: ${{ inputs.from-environment }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          if [ -n "$COMMIT" ] && ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::commit is a full 40-character SHA, not '$COMMIT'."
+            exit 1
+          fi
+          query="repos/$GITHUB_REPOSITORY/deployments?environment=$(jq -rn --arg env "$FROM" '$env | @uri')&per_page=100"
+          [ -z "$COMMIT" ] || query="$query&sha=$COMMIT"
+          # Newest first, every page, since skips can outnumber a page.
+          deployments=$(gh api --paginate "$query" --jq '.[] | "\(.id) \(.sha)"')
+          found=""
+          while read -r id sha; do
+            [ -n "$id" ] || continue
+            deployed=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=100" \
+              --jq 'any(.[]; .state == "success" and (.environment_url // "") != "")')
+            if [ "$deployed" = true ]; then
+              found=$sha
+              break
+            fi
+          done <<< "$deployments"
+          if [ -n "$found" ]; then
+            echo "Promoting $found, which $FROM has deployed."
+          elif [ -n "$COMMIT" ]; then
+            echo "::error::$COMMIT hasn't deployed to $FROM, so it isn't promoted."
+            exit 1
+          else
+            echo "::notice::Skipped: $FROM has no deployment to promote yet."
+          fi
+          echo "commit=$found" >> "$GITHUB_OUTPUT"
+
+  # As cd-web-deploy's job, with the commit fixed. It moves to calling cd-web-deploy once a release has it.
+  deploy:
+    name: Deploy ${{ needs.staged.outputs.commit }} to ${{ inputs.environment }}
+    needs: staged
+    if: needs.staged.outputs.commit != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # As cd-web-deploy's, the URL is set only when the commit deployed is the one GitHub records, the run's.
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.deployed.outputs.environment-url }}
+    permissions:
+      contents: read
+    # cd-web-deploy's group, so deploys and promotions to one environment run one at a time.
+    concurrency:
+      group: cd-web-${{ inputs.environment }}-${{ inputs.working-directory }}-${{ inputs.app-directory }}
+      cancel-in-progress: false
+    outputs:
+      commit: ${{ steps.deployed.outputs.commit }}
+      url: ${{ steps.deployed.outputs.url }}
+      version-id: ${{ steps.wrangler.outputs.version-id }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - id: ready
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          HAS_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN != '' }}
+        run: |
+          missing=()
+          [ -n "$ACCOUNT" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [ "$HAS_TOKEN" = true ] || missing+=(WEB_CLOUDFLARE_API_TOKEN)
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::notice::Skipped: the $ENVIRONMENT environment has no ${missing[*]} yet. The cloudflare-web Terraform module writes them."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.ready.outputs.ready == 'true'
+        uses: betterapps-hq/pipelines/github/actions/setup@c3b85f070cf22fbf7a4dae841461f82e2b16ea20 # v1.2.0
+        with:
+          ref: ${{ needs.staged.outputs.commit }}
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+
+      - if: steps.ready.outputs.ready == 'true'
+        name: Give the commands the environment's settings
+        env:
+          COMMAND_ENV: ${{ vars.WEB_COMMAND_ENV }}
+          COMMAND_SECRETS: ${{ secrets.WEB_COMMAND_SECRETS }}
+        run: |
+          for setting in COMMAND_ENV COMMAND_SECRETS; do
+            json=${!setting}
+            [ -n "$json" ] || continue
+            if ! jq -e 'type == "object" and all(.[]; type == "string")' <<< "$json" > /dev/null 2>&1; then
+              echo "::error::WEB_$setting isn't a JSON object of strings."
+              exit 1
+            fi
+            while IFS= read -r key; do
+              if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                echo "::error::WEB_$setting has a key that isn't an environment variable's name."
+                exit 1
+              fi
+              value=$(jq -r --arg key "$key" '.[$key]' <<< "$json")
+              if [ "$setting" = COMMAND_SECRETS ]; then
+                while IFS= read -r line; do
+                  [ -z "$line" ] || echo "::add-mask::$line"
+                done <<< "$value"
+              fi
+              delimiter="EOF_$(openssl rand -hex 16)"
+              printf '%s<<%s\n%s\n%s\n' "$key" "$delimiter" "$value" "$delimiter" >> "$GITHUB_ENV"
+            done < <(jq -r 'keys[]' <<< "$json")
+          done
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.build-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: eval "$COMMAND"
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.deploy-command == ''
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.app-directory }}
+        run: npx --yes "wrangler@$WRANGLER_VERSION" deploy --dry-run
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.migrate-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.migrate-command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: eval "$COMMAND"
+      - if: steps.ready.outputs.ready == 'true' && inputs.seed-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.seed-command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: eval "$COMMAND"
+
+      - if: steps.ready.outputs.ready == 'true'
+        id: secrets
+        env:
+          WORKER_SECRETS: ${{ secrets.WEB_WORKER_SECRETS }}
+        run: |
+          [ -n "$WORKER_SECRETS" ] || exit 0
+          if ! jq -e 'type == "object" and all(.[]; type == "string")' <<< "$WORKER_SECRETS" > /dev/null 2>&1; then
+            echo "::error::WEB_WORKER_SECRETS isn't a JSON object of strings."
+            exit 1
+          fi
+          file="$RUNNER_TEMP/worker-secrets.json"
+          (umask 077 && printf '%s' "$WORKER_SECRETS" > "$file")
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.deploy-command == ''
+        id: wrangler
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.app-directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          SECRETS_FILE: ${{ steps.secrets.outputs.file }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+        run: |
+          args=(deploy)
+          [ -z "$SECRETS_FILE" ] || args+=(--secrets-file "$SECRETS_FILE")
+          npx --yes "wrangler@$WRANGLER_VERSION" "${args[@]}"
+          deployed=$(jq -c 'select(.type == "deploy")' "$WRANGLER_OUTPUT_FILE_PATH" | tail -n 1)
+          {
+            echo "version-id=$(jq -r '.version_id // empty' <<< "$deployed")"
+            echo "url=$(jq -r 'first(.targets[]? | select(startswith("https://"))) // empty' <<< "$deployed")"
+          } >> "$GITHUB_OUTPUT"
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.deploy-command != ''
+        id: custom
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.deploy-command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WEB_WORKER: ${{ vars.WEB_WORKER }}
+          WORKER_SECRETS_FILE: ${{ steps.secrets.outputs.file }}
+        run: eval "$COMMAND"
+
+      - if: always() && steps.secrets.outputs.file != ''
+        env:
+          FILE: ${{ steps.secrets.outputs.file }}
+        run: rm -f "$FILE"
+
+      - if: steps.wrangler.outcome == 'success' || steps.custom.outcome == 'success'
+        id: deployed
+        env:
+          ENVIRONMENT_URL: ${{ vars.WEB_URL }}
+          REPORTED_URL: ${{ steps.wrangler.outputs.url || steps.custom.outputs.url }}
+        run: |
+          url=${ENVIRONMENT_URL:-$REPORTED_URL}
+          commit=$(git rev-parse HEAD)
+          [ -n "$url" ] || echo "::warning::The deploy has no URL. Set WEB_URL, or report one."
+          [ "$commit" != "$GITHUB_SHA" ] || echo "environment-url=$url" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "Promoted $commit to ${url:-the environment}." >> "$GITHUB_STEP_SUMMARY"

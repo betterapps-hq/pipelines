@@ -1,0 +1,420 @@
+name: Preview a web app
+
+# Publishes a pull request's web app: a Worker preview of the environment's Worker, or whatever the caller's deploy
+# command makes. With neon, it first makes or reuses a Neon branch for the preview and migrates and seeds it. It comments
+# the URL, editing the same comment on later runs, and preview-web-cleanup removes it all when the pull request closes.
+# The environment's settings, which the cloudflare-web Terraform module writes, say where it goes; until they exist it
+# skips with a notice. github/README.md shows a caller.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: The GitHub environment whose settings say where previews go.
+        type: string
+        default: preview
+      preview-name:
+        description: The preview's name, lowercase letters, digits and hyphens. Empty is pr-<the pull request's number>.
+        type: string
+        default: ""
+      working-directory:
+        description: The workspace's root, relative to the repository's. The commands run here.
+        type: string
+        default: .
+      app-directory:
+        description: Where Wrangler runs and finds the Worker's config, relative to the working directory.
+        type: string
+        default: .
+      build-command:
+        description: What builds the app, run in the working directory. Empty skips the build.
+        type: string
+        default: pnpm build
+      neon:
+        description: >-
+          Make or reuse a Neon branch for the preview, from the environment's NEON_ settings, and give the commands its
+          URL as DATABASE_URL.
+        type: boolean
+        default: false
+      migrate-command:
+        description: What migrates the preview's database, run in the working directory. Empty skips it.
+        type: string
+        default: ""
+      seed-command:
+        description: What seeds the preview's database after its migrations, run in the working directory.
+        type: string
+        default: ""
+      database-secret:
+        description: >-
+          The Worker secret Wrangler's preview gets the Neon branch's pooled URL as. Empty gives it none, as when the
+          Worker reaches its database another way.
+        type: string
+        default: DATABASE_URL
+      deploy-command:
+        description: >-
+          What publishes the preview instead of Wrangler, run in the working directory. It reports the preview's URL by
+          appending url=<url> to $GITHUB_OUTPUT.
+        type: string
+        default: ""
+      comment:
+        description: On a pull request, comment the preview's URL, editing the same comment on later runs.
+        type: boolean
+        default: true
+      toolchain:
+        description: vite-plus, pnpm, or auto, as the setup action takes it.
+        type: string
+        default: auto
+    outputs:
+      url:
+        description: The preview's URL; empty when it was skipped or the deploy reported none.
+        value: ${{ jobs.preview.outputs.url }}
+      neon-branch-id:
+        description: The preview's Neon branch; empty without one.
+        value: ${{ jobs.preview.outputs.neon-branch-id }}
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_VERSION: 4.148.0
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  preview:
+    name: Preview ${{ inputs.preview-name || format('pr-{0}', github.event.pull_request.number) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.wrangler.outputs.url || steps.custom.outputs.url }}
+    permissions:
+      contents: read
+      # Write, to comment the URL. The caller's job has to grant it too.
+      pull-requests: write
+    # Publishes of one preview queue rather than cancel, so a database is never left half migrated.
+    concurrency:
+      group: >-
+        preview-web-${{ inputs.environment }}-${{ inputs.preview-name || github.event.pull_request.number }}-${{
+        inputs.working-directory }}-${{ inputs.app-directory }}
+      cancel-in-progress: false
+    outputs:
+      url: ${{ steps.wrangler.outputs.url || steps.custom.outputs.url }}
+      neon-branch-id: ${{ steps.neon.outputs.branch-id }}
+    # An explicit bash runs with pipefail, so a command's own failure isn't hidden behind a pipe.
+    defaults:
+      run:
+        shell: bash
+    env:
+      PREVIEW_NAME: ${{ inputs.preview-name || format('pr-{0}', github.event.pull_request.number) }}
+    steps:
+      # The environment's settings come from Terraform; until they exist there's nowhere to publish.
+      - id: ready
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          HAS_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN != '' }}
+          WORKER: ${{ vars.WEB_WORKER }}
+          CUSTOM_DEPLOY: ${{ inputs.deploy-command != '' }}
+          NEON: ${{ inputs.neon }}
+          NEON_PROJECT: ${{ vars.NEON_PROJECT_ID }}
+          NEON_DATABASE: ${{ vars.NEON_DATABASE_NAME }}
+          NEON_ROLE: ${{ vars.NEON_ROLE_NAME }}
+          HAS_NEON_KEY: ${{ secrets.NEON_API_KEY != '' }}
+        run: |
+          if ! [[ "$PREVIEW_NAME" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "::error::The preview's name, '$PREVIEW_NAME', isn't lowercase letters, digits and hyphens. Give preview-name, or run on a pull request."
+            exit 1
+          fi
+          missing=()
+          [ -n "$ACCOUNT" ] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [ "$HAS_TOKEN" = true ] || missing+=(WEB_CLOUDFLARE_API_TOKEN)
+          [ "$CUSTOM_DEPLOY" = true ] || [ -n "$WORKER" ] || missing+=(WEB_WORKER)
+          if [ "$NEON" = true ]; then
+            [ -n "$NEON_PROJECT" ] || missing+=(NEON_PROJECT_ID)
+            [ -n "$NEON_DATABASE" ] || missing+=(NEON_DATABASE_NAME)
+            [ -n "$NEON_ROLE" ] || missing+=(NEON_ROLE_NAME)
+            [ "$HAS_NEON_KEY" = true ] || missing+=(NEON_API_KEY)
+          fi
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipped: the $ENVIRONMENT environment has no ${missing[*]} yet. The cloudflare-web Terraform module writes them."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.ready.outputs.ready == 'true'
+        uses: betterapps-hq/pipelines/github/actions/setup@c3b85f070cf22fbf7a4dae841461f82e2b16ea20 # v1.2.0
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+
+      # WEB_COMMAND_ENV and WEB_COMMAND_SECRETS are JSON objects of anything else the commands need, such as a build's
+      # public settings. Each entry is an environment variable for the steps after this one, a secret's masked first.
+      - if: steps.ready.outputs.ready == 'true'
+        name: Give the commands the environment's settings
+        env:
+          COMMAND_ENV: ${{ vars.WEB_COMMAND_ENV }}
+          COMMAND_SECRETS: ${{ secrets.WEB_COMMAND_SECRETS }}
+        run: |
+          for setting in COMMAND_ENV COMMAND_SECRETS; do
+            json=${!setting}
+            [ -n "$json" ] || continue
+            if ! jq -e 'type == "object" and all(.[]; type == "string")' <<< "$json" > /dev/null 2>&1; then
+              echo "::error::WEB_$setting isn't a JSON object of strings."
+              exit 1
+            fi
+            while IFS= read -r key; do
+              if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                echo "::error::WEB_$setting has a key that isn't an environment variable's name."
+                exit 1
+              fi
+              value=$(jq -r --arg key "$key" '.[$key]' <<< "$json")
+              if [ "$setting" = COMMAND_SECRETS ]; then
+                while IFS= read -r line; do
+                  [ -z "$line" ] || echo "::add-mask::$line"
+                done <<< "$value"
+              fi
+              delimiter="EOF_$(openssl rand -hex 16)"
+              printf '%s<<%s\n%s\n%s\n' "$key" "$delimiter" "$value" "$delimiter" >> "$GITHUB_ENV"
+            done < <(jq -r 'keys[]' <<< "$json")
+          done
+
+      - if: steps.ready.outputs.ready == 'true' && inputs.build-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.build-command }}
+        run: eval "$COMMAND"
+
+      # A pull request that closed, or moved on to a newer commit, while this run waited or built isn't published: a
+      # rerun of an old run would otherwise bring back a deleted preview, or replace a newer one.
+      - if: steps.ready.outputs.ready == 'true'
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$GITHUB_EVENT_NAME" != pull_request_target ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '"\(.state) \(.head.sha)"')
+          read -r state head <<< "$pr"
+          if [ "$state" != open ]; then
+            echo "::notice::Skipped: pull request $PR is $state."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          elif [ "$head" != "$SHA" ]; then
+            echo "::notice::Skipped: pull request $PR has moved on to ${head::7}, whose run publishes it."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The same as the neon-branch action, which this moves to once a release has it. A branch made from the parent
+      # when the preview first publishes, and kept across pushes so its data does; Neon deletes it after 7 days without
+      # a push, should cleanup never run.
+      - if: steps.current.outputs.current == 'true' && inputs.neon
+        id: neon
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          PARENT: ${{ vars.NEON_PARENT_BRANCH_ID }}
+          DATABASE: ${{ vars.NEON_DATABASE_NAME }}
+          ROLE: ${{ vars.NEON_ROLE_NAME }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          api="https://console.neon.tech/api/v2/projects/$PROJECT_ID"
+          response="$RUNNER_TEMP/neon.json"
+          # Leaves the body in $response and the HTTP status in $status, retrying while another operation holds the
+          # branch.
+          request() {
+            for _ in $(seq 1 30); do
+              if [ -n "${3:-}" ]; then
+                status=$(curl -sS --max-time 60 --retry 3 -o "$response" -w '%{http_code}' -X "$1" \
+                  -H "Authorization: Bearer $NEON_API_KEY" -H "Content-Type: application/json" --data "$3" "$api/$2")
+              else
+                status=$(curl -sS --max-time 60 --retry 3 -o "$response" -w '%{http_code}' -X "$1" \
+                  -H "Authorization: Bearer $NEON_API_KEY" "$api/$2")
+              fi
+              [ "$status" = 423 ] || return 0
+              sleep 2
+            done
+          }
+          succeeded() {
+            case "$status" in
+              2??) ;;
+              *) fail "Neon couldn't $1: HTTP $status. $(jq -r '.message // empty' "$response" 2>/dev/null || true)" ;;
+            esac
+          }
+
+          # Search also matches longer names, pr-12 matching pr-123, so the results are filtered and paged through.
+          found=""
+          cursor=""
+          for _ in $(seq 1 100); do
+            request GET "branches?search=$PREVIEW_NAME&limit=100${cursor:+&cursor=$cursor}"
+            succeeded "list the branches"
+            found=$(jq -c --arg name "$PREVIEW_NAME" 'first(.branches[] | select(.name == $name)) // empty' "$response")
+            cursor=$(jq -r '.pagination.next // empty | @uri' "$response")
+            [ -z "$found" ] && [ -n "$cursor" ] || break
+          done
+          # Past 10,000 matches it stops rather than guess, which could make a second branch or miss one to delete.
+          if [ -z "$found" ] && [ -n "$cursor" ]; then
+            fail "Over 10,000 branches have names like $PREVIEW_NAME, so it can't tell whether one is there."
+          fi
+          if [ -n "$found" ] && ! jq -e --arg parent "$PARENT" \
+            '(.default | not) and (.protected != true) and ($parent == "" or .parent_id == $parent)' <<< "$found" > /dev/null; then
+            fail "The branch named $PREVIEW_NAME is the default or protected${PARENT:+, or not made from $PARENT}, so it's left alone."
+          fi
+          id=$(jq -r '.id // empty' <<< "$found")
+
+          expires=$(jq -rn 'now + 7 * 86400 | floor | todate')
+          if [ -z "$id" ]; then
+            request POST branches "$(jq -nc --arg name "$PREVIEW_NAME" --arg parent "$PARENT" --arg expires "$expires" '{
+              branch: ({ name: $name, expires_at: $expires } + (if $parent == "" then {} else { parent_id: $parent } end)),
+              endpoints: [{ type: "read_write" }]
+            }')"
+            succeeded "make the branch $PREVIEW_NAME"
+            id=$(jq -r .branch.id "$response")
+            echo "Made the Neon branch $PREVIEW_NAME ($id), which Neon deletes at $expires."
+          else
+            request PATCH "branches/$id" "$(jq -nc --arg expires "$expires" '{ branch: { expires_at: $expires } }')"
+            succeeded "move the branch's expiry"
+            echo "Reusing the Neon branch $PREVIEW_NAME ($id), which Neon now deletes at $expires."
+          fi
+
+          for _ in $(seq 1 60); do
+            request GET "branches/$id"
+            succeeded "read the branch"
+            [ "$(jq -r .branch.current_state "$response")" = ready ] && break
+            sleep 2
+          done
+          [ "$(jq -r .branch.current_state "$response")" = ready ] || fail "The branch wasn't ready after two minutes."
+
+          # The URLs carry the role's password, so they're masked before anything can print them.
+          connection_url() {
+            request GET "connection_uri?$(jq -rn --arg id "$id" --arg db "$DATABASE" --arg role "$ROLE" --arg pooled "$1" \
+              '"branch_id=\($id | @uri)&database_name=\($db | @uri)&role_name=\($role | @uri)&pooled=\($pooled)"')"
+            succeeded "get the branch's connection URL"
+            url=$(jq -r .uri "$response")
+            echo "::add-mask::$url"
+            password=$(jq -rn --arg url "$url" '$url | capture("^[^:]+://[^:/@]+:(?<p>[^@]+)@").p // empty')
+            [ -z "$password" ] || echo "::add-mask::$password"
+          }
+          connection_url false
+          delimiter="EOF_$(openssl rand -hex 16)"
+          printf 'DATABASE_URL<<%s\n%s\n%s\n' "$delimiter" "$url" "$delimiter" >> "$GITHUB_ENV"
+          connection_url true
+          rm -f "$response"
+          {
+            echo "branch-id=$id"
+            echo "pooled-database-url=$url"
+            echo "expires=$expires"
+          } >> "$GITHUB_OUTPUT"
+
+      - if: steps.current.outputs.current == 'true' && inputs.migrate-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.migrate-command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: eval "$COMMAND"
+      - if: steps.current.outputs.current == 'true' && inputs.seed-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.seed-command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: eval "$COMMAND"
+
+      # The Worker's secrets for the preview: WEB_WORKER_SECRETS, a JSON object, and the database's URL. Wrangler takes
+      # them as a file, which is deleted when the job ends.
+      - if: steps.current.outputs.current == 'true'
+        id: secrets
+        env:
+          WORKER_SECRETS: ${{ secrets.WEB_WORKER_SECRETS }}
+          DATABASE_SECRET: ${{ inputs.database-secret }}
+          POOLED_URL: ${{ steps.neon.outputs.pooled-database-url }}
+        run: |
+          json=$WORKER_SECRETS
+          [ -n "$json" ] || json='{}'
+          if ! jq -e 'type == "object" and all(.[]; type == "string")' <<< "$json" > /dev/null 2>&1; then
+            echo "::error::WEB_WORKER_SECRETS isn't a JSON object of strings."
+            exit 1
+          fi
+          if [ -n "$DATABASE_SECRET" ] && [ -n "$POOLED_URL" ]; then
+            json=$(jq -c --arg name "$DATABASE_SECRET" --arg url "$POOLED_URL" '. + { ($name): $url }' <<< "$json")
+          fi
+          if [ "$(jq length <<< "$json")" != 0 ]; then
+            file="$RUNNER_TEMP/worker-secrets.json"
+            (umask 077 && printf '%s' "$json" > "$file")
+            echo "file=$file" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Wrangler's preview of the environment's Worker, at pr-<n>-<worker>.<subdomain>.workers.dev. The Worker's config
+      # needs a previews block, which says the preview's bindings.
+      - if: steps.current.outputs.current == 'true' && inputs.deploy-command == ''
+        id: wrangler
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.app-directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER: ${{ vars.WEB_WORKER }}
+          SECRETS_FILE: ${{ steps.secrets.outputs.file }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+        run: |
+          args=(preview --name "$PREVIEW_NAME" --worker-name "$WORKER")
+          [ -z "$SECRETS_FILE" ] || args+=(--secrets-file "$SECRETS_FILE")
+          npx --yes "wrangler@$WRANGLER_VERSION" "${args[@]}"
+          url=$(jq -r 'select(.type == "preview") | .preview_urls[0] // empty' "$WRANGLER_OUTPUT_FILE_PATH" | tail -n 1)
+          [ -n "$url" ] || echo "::warning::The preview has no URL. Turn on preview_urls in the Worker's config."
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - if: steps.current.outputs.current == 'true' && inputs.deploy-command != ''
+        id: custom
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          COMMAND: ${{ inputs.deploy-command }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.WEB_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WEB_WORKER: ${{ vars.WEB_WORKER }}
+          WORKER_SECRETS_FILE: ${{ steps.secrets.outputs.file }}
+        run: eval "$COMMAND"
+
+      - if: always() && steps.secrets.outputs.file != ''
+        env:
+          FILE: ${{ steps.secrets.outputs.file }}
+        run: rm -f "$FILE"
+
+      # One comment per environment and app, found by its marker: later runs edit it, and preview-web-cleanup marks it
+      # removed. The same as the pr-comment action, which this moves to once a release has it.
+      - if: >-
+          (steps.wrangler.outputs.url != '' || steps.custom.outputs.url != '') && inputs.comment &&
+          github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          URL: ${{ steps.wrangler.outputs.url || steps.custom.outputs.url }}
+          NEON_BRANCH: ${{ steps.neon.outputs.branch-id }}
+          EXPIRES: ${{ steps.neon.outputs.expires }}
+          MARKER:
+            "<!-- preview-web ${{ inputs.environment }} ${{ inputs.working-directory }} ${{ inputs.app-directory }} -->"
+        run: |
+          database=""
+          if [ -n "$NEON_BRANCH" ]; then
+            database="
+          **Database:** the Neon branch $PREVIEW_NAME ($NEON_BRANCH), kept across pushes. It's deleted when the pull request closes, or by Neon at $EXPIRES if nothing is pushed before then."
+          fi
+          body="$MARKER
+          **Preview:** $URL$database
+
+          Published from ${SHA::7}. A preview being up doesn't mean CI passed."
+          # shellcheck disable=SC2016 # $ENV is jq's, not the shell's.
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith($ENV.MARKER))) | .id' | sed -n 1p)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+          fi
