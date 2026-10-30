@@ -71,8 +71,8 @@ module "web" {
   }
 
   # A second Worker that hosts the Workflows previews bind to, since a Workflow can't run inside a preview. No
-  # environment deploys to it and nothing is served from it, so it's off workers.dev with no domain; its versions keep
-  # preview URLs, as its Wrangler config says.
+  # environment deploys to it and nothing reaches it by URL, so it's off workers.dev with no domain. Its versions keep
+  # public preview URLs, as its Wrangler config says; preview_urls = false would turn them off.
   extra_workers = {
     preview-workflows = {
       worker_name = "example-preview"

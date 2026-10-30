@@ -79,8 +79,9 @@ variable "environments" {
 variable "extra_workers" {
   description = <<-EOT
     The app's other Workers, by key: ones no GitHub environment deploys to, such as one that hosts the Workflows
-    previews bind to. Each is only a Worker, with no settings in GitHub, no URL and no custom domain, so it can be off
-    workers.dev. The deploy token can deploy it, as it can any Worker in the account.
+    previews bind to. Each is only a Worker, with no settings in GitHub and no custom domain, and the module writes no
+    URL for it, so it can be off workers.dev. Its versions still get public preview URLs unless preview_urls is off.
+    The deploy token can deploy it, as it can any Worker in the account.
     - worker_name: the Worker's name, instead of <name_prefix>-<key>.
     - workers_dev: serve the Worker on its workers.dev address. Its Wrangler config has to agree.
     - preview_urls: give its versions and previews workers.dev URLs. Its Wrangler config has to agree.

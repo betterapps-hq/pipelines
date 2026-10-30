@@ -88,8 +88,9 @@ resource "cloudflare_worker" "extra" {
       error_message = "A Worker's name is 1 to 63 lowercase letters, digits and hyphens, with no hyphen at either end."
     }
 
+    # Preview URLs are on workers.dev too, so they need the subdomain even when the Worker itself is off it.
     postcondition {
-      condition     = !each.value.workers_dev || self.subdomain.url != null
+      condition     = !(each.value.workers_dev || each.value.preview_urls) || self.subdomain.url != null
       error_message = "The account has no workers.dev subdomain. Choose one in the dashboard, under Workers & Pages."
     }
   }

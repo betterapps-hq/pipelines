@@ -29,9 +29,9 @@ For previews, unless `previews` is null:
 For each of `extra_workers`, by default none:
 
 - **A Worker no environment deploys to,** such as one that hosts the Workflows an app's previews bind to. The module
-  owns the same things of it as of an environment's Worker, but gives it no custom domain, no URL and no settings in
-  GitHub, so it can be off workers.dev altogether. Whatever deploys it can use the deploy token, which reaches every
-  Worker in the account.
+  owns the same things of it as of an environment's Worker, but gives it no custom domain and no settings in GitHub, and
+  writes no URL for it, so it can be off workers.dev. Its versions still get public preview URLs on workers.dev unless
+  `preview_urls` is off. Whatever deploys it can use the deploy token, which reaches every Worker in the account.
 
 And once for the repository:
 
@@ -102,7 +102,8 @@ Each environment's fields are optional:
 | `write_account_id`   | `true`                  | Write `CLOUDFLARE_ACCOUNT_ID`. Off where something else does.   |
 
 Each extra Worker's fields are optional too. An environment off workers.dev needs a custom domain, or it has no URL to
-write; an extra Worker has no URL, so it needs neither:
+write; the module writes no URL for an extra Worker, so it needs neither. Turn `preview_urls` off too where its versions
+shouldn't have public preview URLs:
 
 | Field          | Default               | What it's for                                                   |
 | -------------- | --------------------- | --------------------------------------------------------------- |
@@ -140,6 +141,10 @@ Outputs: `environments`, each environment's `worker` and `url`, by name; `previe
   `import { to = module.web.cloudflare_worker.web["production"], id = "<account id>/<worker name>" }`. An extra Worker
   is `module.web.cloudflare_worker.extra["<key>"]`. Set its `workers_dev` and `preview_urls` to what the Worker has
   today, so importing it changes nothing.
+- **Taking an environment or an extra Worker out deletes its Worker,** with every deployed version, and so does renaming
+  its key. To rename a key, add a `moved` block from the old address to the new one. To stop managing a Worker but keep
+  it, take it out of the state first, with `terraform state rm 'module.web.cloudflare_worker.extra["<key>"]'` or the
+  environment's address; a `removed` block can't name one key of a map. The plan shows any deletion before it's applied.
 
 An app whose previews bind to Workflows in a second Worker, `app-preview`, deployed already, off workers.dev and with
 preview URLs, adopts it like this:
@@ -189,8 +194,9 @@ import {
 
 ## Limits
 
-- **The account needs a workers.dev subdomain** for an environment on workers.dev, chosen once in the dashboard under
-  Workers & Pages. Without it the apply stops after making the Workers, and says why.
+- **The account needs a workers.dev subdomain** for an environment on workers.dev, or an extra Worker on it or with
+  preview URLs, chosen once in the dashboard under Workers & Pages. Without it the apply stops after making the Workers,
+  and says why.
 - **Deploys own the Worker's runtime settings,** such as observability and logpush, and Terraform ignores them. It owns
   the Worker's name, its workers.dev and preview settings, which Wrangler's `workers_dev` and `preview_urls` have to
   agree with, and its custom domain.
