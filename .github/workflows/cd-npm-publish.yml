@@ -66,6 +66,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # To read ci-workflow's runs, which a private repository's token needs.
+      actions: read
     outputs:
       packages: ${{ steps.select.outputs.packages }}
       any: ${{ steps.select.outputs.any }}
@@ -97,10 +99,10 @@ jobs:
           else
             # Not started by CI's run, as by a workflow_dispatch: CI has to have passed on this commit's push all the same.
             [ -n "$CI_WORKFLOW" ] || skip "a run CI didn't start needs ci-workflow, to check CI passed on ${GITHUB_SHA::7}."
-            if ! passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/runs?head_sha=$GITHUB_SHA&event=push&status=success" --jq .total_count); then
-              skip "couldn't read $CI_WORKFLOW's runs; a private repository's caller grants actions: read."
+            if ! passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/runs?head_sha=$GITHUB_SHA&branch=$DEFAULT_BRANCH&event=push&status=success" --jq .total_count); then
+              skip "couldn't read $CI_WORKFLOW's runs."
             fi
-            [ "$passed" -gt 0 ] || skip "$CI_WORKFLOW hasn't passed on ${GITHUB_SHA::7}'s push."
+            [ "$passed" -gt 0 ] || skip "$CI_WORKFLOW hasn't passed on ${GITHUB_SHA::7}'s push to $DEFAULT_BRANCH."
           fi
           echo "ready=true" >> "$GITHUB_OUTPUT"
 

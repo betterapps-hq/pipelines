@@ -215,12 +215,13 @@ jobs:
       working-directory: examples/release
       dry-run: true
 
-  # GitHub checks a reusable workflow's permissions before the run starts, so these grant id-token: write, though a dry
-  # run never uses it.
+  # GitHub checks a reusable workflow's permissions before the run starts, so these grant id-token: write and
+  # actions: read, though a dry run uses neither.
   cd-npm-publish:
     name: cd-npm-publish (dry run, publishConfig required)
     permissions:
       contents: read
+      actions: read
       id-token: write
     uses: ./.github/workflows/cd-npm-publish.yml
     with:
@@ -232,6 +233,7 @@ jobs:
     name: cd-npm-publish (dry run, every public package)
     permissions:
       contents: read
+      actions: read
       id-token: write
     uses: ./.github/workflows/cd-npm-publish.yml
     with:
