@@ -47,6 +47,145 @@ jobs:
       - run: pnpm test:integration
 ```
 
+## vite-task-cache
+
+A composite action. It keeps a Vite+ workspace's task cache, `node_modules/.vite/task-cache`, between runs: it restores
+the newest one saved for the same system and workspace, and saves it again at the end of the job when every step passed.
+`vp run` then replays the tasks whose inputs haven't changed instead of running them.
+
+It's an action, not a reusable workflow, because the cache has to be restored inside the job that runs the tasks, after
+its install and before its first `vp run`, and saved at that job's end. A reusable workflow is a job of its own, so it
+could only wrap a whole job, as ci-verify does.
+
+- **Call it after the install and before any `vp run`.** An install can recreate `node_modules`, and what's restored is
+  unpacked over whatever is already there.
+- **It saves when the job ends,** in the post step of the `actions/cache` it wraps, and only when every step passed. A
+  pull request from a fork can't write the cache, so it restores and doesn't save.
+- **It only helps tasks that cache:** those defined in `vite.config.ts`'s `run.tasks`, and `package.json` scripts run
+  with `vp run --cache`. `vp check`, `vp build` or `pnpm build` run directly don't use the task cache.
+- **Vite+ calls this experimental.** Check each task replays in the logs, as `◉ cache hit, replaying`, and that the
+  restore and save take less time than the tasks they save.
+
+| Input               | Default      | What it's for                                                                                       |
+| ------------------- | ------------ | --------------------------------------------------------------------------------------------------- |
+| `working-directory` | `.`          | The workspace's root, relative to the repository's: in a monorepo, the root, not a package.         |
+| `key`               | `github.job` | What tells this job's caches from others', such as a matrix value where a job runs on one OS twice. |
+
+| Output      | What it is                                                                                                                                           |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | The key the cache is saved under at the end of the job.                                                                                              |
+| `restored`  | `true` when a cache was restored, this job's or another's; `false` when there was none. If the folder was already there, only an exact match counts. |
+| `cache-hit` | `true` when a cache was saved under this very key already, as by an earlier job in the run with that key.                                            |
+
+Permissions: none of its own. The cache uses the runner's own token.
+
+### Its keys
+
+Each run saves a new cache, since a saved one never changes, and the next restores the newest that fits:
+
+```text
+saved as   vite-task-<os>-<arch>-[<working directory>]-[<key>]-<run id>-<run attempt>
+restores   vite-task-<os>-<arch>-[<working directory>]-[<key>]-   the newest of this job's
+           vite-task-<os>-<arch>-[<working directory>]-           then the newest of any job's
+```
+
+- **Systems, architectures and workspaces never share a cache,** since tasks' outputs and the tools that make them can
+  differ between them. The brackets keep a workspace or key that starts another, such as `build` and `build-storybook`,
+  from matching its prefix.
+- **Jobs prefer their own cache and fall back to any job's,** so a pull request's build can replay what its checks ran.
+  That's safe because what the key leaves out, Vite Task checks: it fingerprints each task's inputs, files, arguments
+  and the environment variables it's told to, and replays only the tasks that still match. That's also why the lockfile
+  and sources stay out of the key, as Vite+ advises: keyed on them, a change would skip a cache whose other tasks would
+  have hit.
+- **Two jobs in one run with the same key and system save under one key.** Whichever saves first keeps it, and the
+  other's save is skipped with a warning, so give each its own key, unless one should restore exactly what the other
+  saved, as this repository's tests do.
+- **Pull requests restore from their own branch and the base branch,** as GitHub scopes caches, so the base branch's
+  pushes should save one for new pull requests to start from.
+- **Caches grow,** since Vite Task keeps an entry for each task and evicts none, and GitHub evicts the oldest past the
+  repository's limit. Each run's is a new entry, so keep the path to what Vite Task writes, as this does, and keep the
+  action to the jobs whose tasks it saves time on.
+
+### On Windows
+
+Vite Task's file tracking records some directory listings on Windows that it doesn't on Linux or macOS: those of
+`node_modules` and `node_modules/.vite`. Vite and Vitest add folders of their own there, `.vite-temp`, `.vitest-cache`
+and `.vite/vitest`, which aren't part of the task cache. So on a fresh Windows runner every task misses, with
+`'.vite-temp' removed from 'node_modules'`, and in one job a check run after the tests misses with
+`'.vitest-cache' added in 'node_modules'`. Leave those two listings out of each task's inputs; what the dependencies
+hold stays tracked:
+
+```ts
+// vite.config.ts
+const cache = { input: [{ auto: true }, "!node_modules", "!node_modules/.vite/**"] }
+
+export default defineConfig({
+  run: {
+    tasks: {
+      check: { command: "vp check", cache },
+      test: { command: "vp test run", cache }
+    }
+  }
+})
+```
+
+The [Vite+ example](../examples/vite-plus) does this, and the tests check its tasks replay on every system, a fresh
+runner's included.
+
+### A build job
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # <version>
+      - uses: betterapps-hq/pipelines/github/actions/vite-task-cache@<commit sha> # <version>
+      # A task in vite.config.ts, so it's cached; a package.json script would need vp run --cache build.
+      - run: vp run build
+      - uses: actions/upload-artifact@<commit sha> # v7
+        with:
+          name: build
+          path: dist
+```
+
+### A pull request's jobs
+
+```yaml
+# .github/workflows/pr.yml
+on:
+  pull_request:
+  # main saves the caches new pull requests start from.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # <version>
+      - uses: betterapps-hq/pipelines/github/actions/vite-task-cache@<commit sha> # <version>
+      - run: vp run -r typecheck
+  e2e:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: betterapps-hq/pipelines/github/actions/setup@<commit sha> # <version>
+      - uses: betterapps-hq/pipelines/github/actions/vite-task-cache@<commit sha> # <version>
+        with:
+          # Two shards run on each system, so each keeps a cache of its own.
+          key: e2e-${{ matrix.shard }}
+      - run: vp run --cache test:e2e --shard=${{ matrix.shard }}/2
+```
+
 ## ci-verify
 
 A reusable workflow. It runs the workspace's `pnpm verify` on each operating system the caller lists, each on a runner
@@ -85,7 +224,9 @@ Permissions: `contents: read`.
   `NODE_OPTIONS` this way, so it has an input of its own, which reaches only the caller's scripts.
 - **`vite-task-cache` helps only tasks run with `vp run` that cache:** those defined in `vite.config.ts`, and
   `package.json` scripts run with `--cache`, such as `vp run --cache verify`. `vp check` or `pnpm verify` run directly
-  don't use Vite+'s task cache.
+  don't use Vite+'s task cache. On Windows, tasks need two inputs left out to replay, as
+  [the action's section](#on-windows) shows. ci-verify keeps the cache with steps of its own, under keys without the
+  job's, until a release moves it onto [the action](#vite-task-cache).
 - **`concurrency-key`** changes what a newer run cancels. `${{ github.event.pull_request.number || github.run_id }}`
   keeps cancelling superseded pull request runs while runs on `main` never wait on each other.
 - **Its checks are named `<calling job> / Verify (<runner>)`.** Where a branch rule or other automation requires a check

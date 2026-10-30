@@ -24,6 +24,7 @@ fix lands in one place instead of being copied between repositories.
 | `github/actions/setup`                      | Composite action  | Checks out, installs Node, Vite+ or pnpm, and the workspace's dependencies                                  |
 | `github/actions/neon-branch`                | Composite action  | Makes or reuses a Neon branch by name and gives its URLs, or deletes it                                     |
 | `github/actions/pr-comment`                 | Composite action  | Writes a pull request comment found by a marker, editing it on later runs                                   |
+| `github/actions/vite-task-cache`            | Composite action  | Keeps Vite+'s task cache between runs, so `vp run` replays tasks whose inputs haven't changed               |
 | `.github/workflows/ci-verify.yml`           | Reusable workflow | Runs the workspace's `pnpm verify` on each operating system the caller lists                                |
 | `.github/workflows/publish-storybook.yml`   | Reusable workflow | Publishes a Storybook to the environment the caller names: a pull request's preview, staging or production  |
 | `.github/workflows/unpublish-storybook.yml` | Reusable workflow | Deletes a pull request's Storybook preview                                                                  |
@@ -96,11 +97,12 @@ Cloud services the templates need come from Terraform, never by hand or from a p
 
 ## Testing
 
-[`test.yml`](.github/workflows/test.yml) lints every workflow with actionlint, runs the setup and pr-comment actions
-from the commit under test on Ubuntu, Windows and macOS, setup against the pnpm and Vite+ examples, and calls the
-reusable workflows against them. A reusable workflow uses this repository's actions at the release it names, so a change
-to an action is tested directly, and reaches the workflows when it's released. It also validates every Terraform
-module's example, and checks the Storybook, Terraform and web templates skip cleanly where nothing is set up for them.
+[`test.yml`](.github/workflows/test.yml) lints every workflow with actionlint, runs the setup, pr-comment and
+vite-task-cache actions from the commit under test on Ubuntu, Windows and macOS, setup against the pnpm and Vite+
+examples, vite-task-cache with the Vite+ example's tasks, checking a fresh runner replays them, and calls the reusable
+workflows against them. A reusable workflow uses this repository's actions at the release it names, so a change to an
+action is tested directly, and reaches the workflows when it's released. It also validates every Terraform module's
+example, and checks the Storybook, Terraform and web templates skip cleanly where nothing is set up for them.
 `release-prepare` and `cd-npm-publish` run as dry runs against the release example, which need no token: the bump's
 title and versions, and which packages each publishing rule picks, in order. `release-merge` only acts on a real release
 pull request, so actionlint is its only check here.

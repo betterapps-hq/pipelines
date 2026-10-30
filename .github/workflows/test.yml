@@ -91,6 +91,90 @@ jobs:
         test -f prepared.txt
         ${{ matrix.verify }}
 
+  # The vite-task-cache action from this commit, with the Vite+ example's tasks, on each system. This job runs them twice
+  # and the second time has to replay both, which shows they're tracked stably there, Windows included. Its cache is
+  # saved at the end, and the next job restores it on a fresh runner, where both have to replay again.
+  vite-task-cache:
+    name: vite-task-cache (save, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: examples/vite-plus
+    env:
+      NO_COLOR: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./github/actions/setup
+        with:
+          checkout: "false"
+          working-directory: examples/vite-plus
+      - id: cache
+        uses: ./github/actions/vite-task-cache
+        with:
+          working-directory: examples/vite-plus
+          key: test
+      - name: Check the key
+        env:
+          KEY: ${{ steps.cache.outputs.key }}
+          EXPECTED:
+            vite-task-${{ runner.os }}-${{ runner.arch }}-[examples/vite-plus]-[test]-${{ github.run_id }}-${{
+            github.run_attempt }}
+        run: test "$KEY" = "$EXPECTED"
+      - run: vp run verify
+      # The log goes outside the workspace, since a new file in it would change what the tasks list.
+      - name: Check both tasks replay
+        run: vp run verify | tee "$RUNNER_TEMP/verify.log" && grep -q "2/2 cache hit" "$RUNNER_TEMP/verify.log"
+
+  vite-task-cache-restore:
+    name: vite-task-cache (restore, ${{ matrix.os }})
+    needs: vite-task-cache
+    # A fork's pull request can restore but not save, so on its first run there's nothing for this job to find.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: examples/vite-plus
+    env:
+      NO_COLOR: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./github/actions/setup
+        with:
+          checkout: "false"
+          working-directory: examples/vite-plus
+      # The same key as the job before, so it restores exactly what that job saved, unless only this job is re-run.
+      - id: cache
+        uses: ./github/actions/vite-task-cache
+        with:
+          working-directory: examples/vite-plus
+          key: test
+      # On a run's first attempt it has to be the cache the save job just made, not an older one restore-keys found. A
+      # re-run of only this job has a new attempt in its key, so there it can only be an older one.
+      - name: Check it restored the cache the save job made
+        env:
+          RESTORED: ${{ steps.cache.outputs.restored }}
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          echo "cache-hit: $CACHE_HIT"
+          test "$RESTORED" = true
+          if [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then test "$CACHE_HIT" = true; fi
+      - name: Check both tasks replay on a fresh runner
+        run: vp run verify | tee "$RUNNER_TEMP/verify.log" && grep -q "2/2 cache hit" "$RUNNER_TEMP/verify.log"
+
   # Nothing here is set up to publish to, so these check the templates skip with a notice rather than fail. The test
   # environment exists only for that.
   publish-storybook:
@@ -355,6 +439,8 @@ jobs:
       - lint
       - setup
       - ci-verify
+      - vite-task-cache
+      - vite-task-cache-restore
       - publish-storybook
       - publish-storybook-skipped
       - unpublish-storybook

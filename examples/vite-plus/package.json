@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "verify": "vp check && vp test run"
+    "verify": "vp run check && vp run test"
   },
   "devDependencies": {
     "typescript": "7.0.2",
