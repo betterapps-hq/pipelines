@@ -46,7 +46,12 @@ rest of delivery (`cd-desktop-build`, `cd-desktop-release`, `cd-desktop-promote`
 ## Callers
 
 Every repository's pipelines are moving onto these templates, a stage at a time. A repository's own workflows say which
-release they pin.
+release they pin. Each pins a template by its full commit, with the version in a comment, and
+[github/README.md](github/README.md) documents each one's inputs, secrets and permissions:
+
+```yaml
+uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@daadeb4db946e05b27cec1a1fb35be777feb4718 # v1.4.0
+```
 
 | Repository                  | Visibility | On the templates                                                                    | Next                                                                     |
 | --------------------------- | ---------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
