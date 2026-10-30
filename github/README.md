@@ -635,7 +635,7 @@ there was nothing to publish, the registry had every version by then, in a dry r
 
 Secrets: none. Permissions: `contents: read` and `id-token: write`, which the calling job grants, a dry run's too.
 
-````yaml
+```yaml
 # .github/workflows/cd-npm.yml, each package's trusted publisher on npmjs.com
 name: CD npm
 on:
@@ -661,6 +661,7 @@ jobs:
     with:
       # Parity's desktop app is versioned but not published, so only packages with a publishConfig go.
       require-publish-config: true
+```
 
 ## Web apps
 
@@ -761,7 +762,7 @@ jobs:
       neon: true
       migrate-command: pnpm --filter web db:migrate
       seed-command: pnpm --filter web db:seed
-````
+```
 
 ## preview-web-cleanup
 
@@ -771,8 +772,9 @@ what the caller's delete command removes, and with `neon` the preview's Neon bra
 - **It skips with a notice** when the environment has no settings, and keeps a preview whose pull request is open again.
 - **A preview that isn't there counts as deleted.** While the Worker is being deployed, as merging often starts,
   Cloudflare can report it missing, so that's retried.
-- **The Neon branch is deleted even when deleting the preview fails,** and the comment is marked removed only once both
-  are gone.
+- **The Neon branch is deleted even when deleting the preview fails,** unless the run was cancelled or the pull request
+  has reopened by then, and the comment is marked removed only once both are gone. A failed delete fails the job, so a
+  rerun finishes the cleanup.
 - **A delete command** runs instead of Wrangler, in the default branch's checkout rather than the pull request's, with
   `PREVIEW_NAME` and `WEB_WORKER`.
 
@@ -817,7 +819,8 @@ A reusable workflow that deploys a web app to the GitHub environment the caller 
 app, has Wrangler check the Worker with `wrangler deploy --dry-run`, runs the caller's migrations and seed, then deploys
 with `wrangler deploy` and `WEB_WORKER_SECRETS`, or with the caller's deploy command.
 
-- **The dry run comes before the migrations,** so a Worker that can't deploy never changes the database.
+- **The dry run comes before the migrations,** so a Worker that can't deploy never changes the database. A deploy
+  command has no dry run, so the migrations run before anything checks it; it should check what it can in the build.
 - **A push its branch has moved past is skipped,** so a rerun of an older run, or one that waited behind a newer, can't
   put older code back. Give `ref` to deploy a commit of your choosing, though GitHub records the run's commit, so
   `cd-web-promote` can't promote from that deploy.
@@ -913,7 +916,8 @@ jobs:
       app-directory: apps/web
       migrate-command: pnpm --filter web db:migrate
 
-  # Where production can require a reviewer, this can follow staging instead, with needs: staging.
+  # Where production can require a reviewer, it can follow staging instead: needs: staging, and
+  # if: github.event_name == 'push'.
   production:
     if: github.event_name == 'workflow_dispatch'
     permissions:

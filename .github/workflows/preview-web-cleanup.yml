@@ -198,6 +198,8 @@ jobs:
           NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
           PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
           PARENT: ${{ vars.NEON_PARENT_BRANCH_ID }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           fail() {
             echo "::error::$1"
@@ -242,6 +244,11 @@ jobs:
             fail "The branch named $PREVIEW_NAME is the default or protected${PARENT:+, or not made from $PARENT}, so it's left alone."
           fi
           id=$(jq -r .id <<< "$found")
+          # Deleting the Worker preview can take minutes of retries; a pull request reopened meanwhile keeps its data.
+          if [ -n "$PR" ] && [ "$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .state)" = open ]; then
+            echo "::notice::Kept the Neon branch $PREVIEW_NAME: pull request $PR is open again."
+            exit 0
+          fi
           request DELETE "branches/$id"
           [ "$status" = 404 ] || succeeded "delete the branch $PREVIEW_NAME ($id)"
           echo "Deleted the Neon branch $PREVIEW_NAME ($id)."
