@@ -6,6 +6,10 @@ locals {
     )
   }
 
+  extra_worker_names = {
+    for key, worker in var.extra_workers : key => coalesce(worker.worker_name, "${var.name_prefix}-${key}")
+  }
+
   # A custom domain when there is one, else the Worker's workers.dev address, as cloudflare-storybook works it out.
   urls = {
     for name, env in var.environments : name => (
@@ -59,6 +63,34 @@ resource "cloudflare_worker" "web" {
     # The provider has no resource for the account's subdomain, so it's chosen once, by hand.
     postcondition {
       condition     = !each.value.workers_dev || self.subdomain.url != null
+      error_message = "The account has no workers.dev subdomain. Choose one in the dashboard, under Workers & Pages."
+    }
+  }
+}
+
+# The app's other Workers, which no environment deploys to. The module owns the same things it owns of an environment's
+# Worker, and writes nothing to GitHub for them; whatever deploys them uses the deploy token or its own.
+resource "cloudflare_worker" "extra" {
+  for_each   = var.extra_workers
+  account_id = var.account_id
+  name       = local.extra_worker_names[each.key]
+
+  subdomain = {
+    enabled          = each.value.workers_dev
+    previews_enabled = each.value.preview_urls
+  }
+
+  lifecycle {
+    ignore_changes = [logpush, observability, tags, tail_consumers, previews_base_config]
+
+    precondition {
+      condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", local.extra_worker_names[each.key]))
+      error_message = "A Worker's name is 1 to 63 lowercase letters, digits and hyphens, with no hyphen at either end."
+    }
+
+    # Preview URLs are on workers.dev too, so they need the subdomain even when the Worker itself is off it.
+    postcondition {
+      condition     = !(each.value.workers_dev || each.value.preview_urls) || self.subdomain.url != null
       error_message = "The account has no workers.dev subdomain. Choose one in the dashboard, under Workers & Pages."
     }
   }

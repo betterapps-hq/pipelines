@@ -70,6 +70,16 @@ module "web" {
     }
   }
 
+  # A second Worker that hosts the Workflows previews bind to, since a Workflow can't run inside a preview. No
+  # environment deploys to it and nothing reaches it by URL, so it's off workers.dev with no domain. Its versions keep
+  # public preview URLs, as its Wrangler config says; preview_urls = false would turn them off.
+  extra_workers = {
+    preview-workflows = {
+      worker_name = "example-preview"
+      workers_dev = false
+    }
+  }
+
   # Each pull request is a preview of the staging Worker, with a Neon branch copied from staging's database.
   previews = {
     neon = {
@@ -91,6 +101,16 @@ module "web" {
   token_permissions = ["Workers Scripts Write", "D1 Write"]
 }
 
+# The Workflows' Worker was deployed before this project, so it's adopted rather than made again.
+import {
+  to = module.web.cloudflare_worker.extra["preview-workflows"]
+  id = "0123456789abcdef0123456789abcdef/example-preview"
+}
+
 output "web" {
   value = module.web.environments
+}
+
+output "extra_workers" {
+  value = module.web.extra_workers
 }

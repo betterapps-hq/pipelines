@@ -72,7 +72,44 @@ variable "environments" {
 
   validation {
     condition     = alltrue([for env in var.environments : env.workers_dev || env.custom_domain != null])
-    error_message = "An environment without workers_dev needs a custom_domain, or it has no address."
+    error_message = "An environment without workers_dev needs a custom_domain. A Worker with no address goes in extra_workers."
+  }
+}
+
+variable "extra_workers" {
+  description = <<-EOT
+    The app's other Workers, by key: ones no GitHub environment deploys to, such as one that hosts the Workflows
+    previews bind to. Each is only a Worker, with no settings in GitHub and no custom domain, and the module writes no
+    URL for it, so it can be off workers.dev. Its versions still get public preview URLs unless preview_urls is off.
+    The deploy token can deploy it, as it can any Worker in the account.
+    - worker_name: the Worker's name, instead of <name_prefix>-<key>.
+    - workers_dev: serve the Worker on its workers.dev address. Its Wrangler config has to agree.
+    - preview_urls: give its versions and previews workers.dev URLs. Its Wrangler config has to agree.
+  EOT
+  type = map(object({
+    worker_name  = optional(string)
+    workers_dev  = optional(bool, true)
+    preview_urls = optional(bool, true)
+  }))
+  default = {}
+
+  validation {
+    condition = length(distinct([
+      for key, worker in var.extra_workers : coalesce(worker.worker_name, "${var.name_prefix}-${key}")
+    ])) == length(var.extra_workers)
+    error_message = "Each extra Worker needs a name of its own."
+  }
+
+  # The names main.tf gives the environments' Workers, worked out here so a clash fails before anything is planned.
+  validation {
+    condition = length(setintersection(
+      [for key, worker in var.extra_workers : coalesce(worker.worker_name, "${var.name_prefix}-${key}")],
+      [
+        for name, env in var.environments :
+        coalesce(env.worker_name, name == "production" ? var.name_prefix : "${var.name_prefix}-${name}")
+      ],
+    )) == 0
+    error_message = "An extra Worker can't have an environment's Worker's name."
   }
 }
 

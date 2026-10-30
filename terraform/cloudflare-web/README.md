@@ -26,6 +26,13 @@ For previews, unless `previews` is null:
 - **Where a preview's Neon branch comes from,** when `previews.neon` is given, and the Neon API key that makes and
   deletes them.
 
+For each of `extra_workers`, by default none:
+
+- **A Worker no environment deploys to,** such as one that hosts the Workflows an app's previews bind to. The module
+  owns the same things of it as of an environment's Worker, but gives it no custom domain and no settings in GitHub, and
+  writes no URL for it, so it can be off workers.dev. Its versions still get public preview URLs on workers.dev unless
+  `preview_urls` is off. Whatever deploys it can use the deploy token, which reaches every Worker in the account.
+
 And once for the repository:
 
 - **One account-owned Cloudflare API token** that every environment's deploys, migrations and previews use.
@@ -76,6 +83,7 @@ address, `https://<worker>.<subdomain>.workers.dev`, where `<subdomain>` is the 
 | `repository`        | (required)                  | The repository's name, without the owner the `github` provider sets.           |
 | `name_prefix`       | (required)                  | Starts each Worker's name. Usually the app's name.                             |
 | `environments`      | `staging` and `production`  | The GitHub environments the app deploys to, by name, with the fields below.    |
+| `extra_workers`     | `{}`                        | Other Workers, by key, that no environment deploys to, with the fields below.  |
 | `previews`          | A `preview` environment     | Pull request previews, with the fields below; `null` for none.                 |
 | `neon_api_key`      | `null`                      | A Neon API key that can make and delete branches. Needed with `previews.neon`. |
 | `secrets`           | `{}`                        | Secrets by environment name: `command` and `worker` maps of strings.           |
@@ -93,6 +101,16 @@ Each environment's fields are optional:
 | `manage_environment` | `false`                 | Make and own the GitHub environment, not use an existing one.   |
 | `write_account_id`   | `true`                  | Write `CLOUDFLARE_ACCOUNT_ID`. Off where something else does.   |
 
+Each extra Worker's fields are optional too. An environment off workers.dev needs a custom domain, or it has no URL to
+write; the module writes no URL for an extra Worker, so it needs neither. Turn `preview_urls` off too where its versions
+shouldn't have public preview URLs:
+
+| Field          | Default               | What it's for                                                   |
+| -------------- | --------------------- | --------------------------------------------------------------- |
+| `worker_name`  | `<name_prefix>-<key>` | The Worker's name, instead. No other Worker here can have it.   |
+| `workers_dev`  | `true`                | Serve it on workers.dev. Its Wrangler config has to agree.      |
+| `preview_urls` | `true`                | URLs for its versions and previews. Its Wrangler config agrees. |
+
 And `previews`' fields:
 
 | Field                | Default   | What it's for                                                                   |
@@ -104,8 +122,8 @@ And `previews`' fields:
 | `manage_environment` | `true`    | Make and own the GitHub environment.                                            |
 | `write_account_id`   | `true`    | Write `CLOUDFLARE_ACCOUNT_ID`.                                                  |
 
-Outputs: `environments`, each environment's `worker` and `url`, by name; and `previews`, the preview `environment` and
-the `worker` they're previews of, or null.
+Outputs: `environments`, each environment's `worker` and `url`, by name; `previews`, the preview `environment` and the
+`worker` they're previews of, or null; and `extra_workers`, each extra Worker's name, by key.
 
 ## Existing environments and Workers
 
@@ -120,7 +138,31 @@ the `worker` they're previews of, or null.
   environment. Two owners of one variable fight, so set `write_account_id = false` in one of them. Both name the same
   account.
 - **A Worker that's deployed already is imported,** rather than made again, with an `import` block in the root project:
-  `import { to = module.web.cloudflare_worker.web["production"], id = "<account id>/<worker name>" }`.
+  `import { to = module.web.cloudflare_worker.web["production"], id = "<account id>/<worker name>" }`. An extra Worker
+  is `module.web.cloudflare_worker.extra["<key>"]`. Set its `workers_dev` and `preview_urls` to what the Worker has
+  today, so importing it changes nothing.
+- **Taking an environment or an extra Worker out deletes its Worker,** with every deployed version, and so does renaming
+  its key. To rename a key, add a `moved` block from the old address to the new one, and set `worker_name` to the
+  Worker's current name if it was made from the key, or the Worker is renamed too. To stop managing a Worker but keep
+  it, take it out of the state first, with `terraform state rm 'module.web.cloudflare_worker.extra["<key>"]'` or the
+  environment's address; a `removed` block can't name one key of a map. The plan shows any deletion before it's applied.
+
+An app whose previews bind to Workflows in a second Worker, `app-preview`, deployed already, off workers.dev and with
+preview URLs, adopts it like this:
+
+```hcl
+module "web" {
+  # ...
+  extra_workers = {
+    preview-workflows = { worker_name = "app-preview", workers_dev = false }
+  }
+}
+
+import {
+  to = module.web.cloudflare_worker.extra["preview-workflows"]
+  id = "<account id>/app-preview"
+}
+```
 
 ## Previews
 
@@ -139,7 +181,8 @@ the `worker` they're previews of, or null.
   migrations and bindings need: D1 Write for D1 migrations, Queues Write for a queue consumer, and so on.
 - **It isn't limited to these Workers,** for the reasons the
   [`cloudflare-storybook` token](../cloudflare-storybook/README.md#the-token) isn't: it can deploy, change and delete
-  any Worker in the account.
+  any Worker in the account, the extra Workers included. The module writes it only into the environments, so a job that
+  deploys an extra Worker reads it from one of them, or uses credentials of its own.
 - **The preview environment holds it too,** and a preview runs a pull request's code, so anyone who can push a branch
   can reach what the token can. Keep previews to branches of the repository, as the templates' example callers do.
 - **It's account-owned,** so it doesn't stop working when the person who applied leaves the account.
@@ -152,8 +195,9 @@ the `worker` they're previews of, or null.
 
 ## Limits
 
-- **The account needs a workers.dev subdomain** for an environment on workers.dev, chosen once in the dashboard under
-  Workers & Pages. Without it the apply stops after making the Workers, and says why.
+- **The account needs a workers.dev subdomain** for an environment on workers.dev, or an extra Worker on it or with
+  preview URLs, chosen once in the dashboard under Workers & Pages. Without it the apply stops after making the Workers,
+  and says why.
 - **Deploys own the Worker's runtime settings,** such as observability and logpush, and Terraform ignores them. It owns
   the Worker's name, its workers.dev and preview settings, which Wrangler's `workers_dev` and `preview_urls` have to
   agree with, and its custom domain.
@@ -175,8 +219,8 @@ What the root project's Terraform runs with:
 ## Example
 
 [`examples/basic`](examples/basic/main.tf) is a repository's `infra/web/main.tf`: staging on workers.dev, production on
-its own domain, and previews of staging's Worker with Neon branches of staging's database. CI validates it without
-credentials:
+its own domain, previews of staging's Worker with Neon branches of staging's database, and an extra Worker for the
+previews' Workflows, off workers.dev and imported. CI validates it without credentials:
 
 ```sh
 cd examples/basic

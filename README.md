@@ -79,7 +79,8 @@ Cloud services the templates need come from Terraform, never by hand or from a p
   environment's settings. Its README says what it makes and how a repository's `infra/` uses it.
 - **`cloudflare-web` is for the web templates:** a web app's Worker for each environment it deploys to, with a custom
   domain where one is given, a token that can deploy and migrate, and each GitHub environment's settings, including the
-  preview environment's and where its Neon branches come from.
+  preview environment's and where its Neon branches come from. It can also own the app's other Workers that no
+  environment deploys to, such as one hosting its previews' Workflows.
 - **`github-repository-rules` writes a repository's rulesets,** the ones this repository has: the default branch takes
   squashed pull requests with their checks passing and conversations resolved, and release tags never move.
 
