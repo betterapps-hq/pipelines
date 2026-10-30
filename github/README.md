@@ -774,6 +774,7 @@ through npm's trusted publishing: no token, and with provenance.
 | `build-command`          | (empty) | What builds the packages, in the working directory; empty runs their `build`s.     |
 | `environment`            | `npm`   | The GitHub environment publishing runs in, which npm's trusted publisher can name. |
 | `toolchain`              | `auto`  | As the setup action takes it.                                                      |
+| `ci-workflow`            | (empty) | CI's workflow file, such as `ci.yml`, whose passing push run a dispatch needs.     |
 | `dry-run`                | `false` | Find, build and pack the packages without publishing.                              |
 
 Outputs: `packages`, those to publish, or that a dry run would, as a JSON array of `name`, `version` and `path` in the
@@ -808,6 +809,8 @@ jobs:
     with:
       # Parity's desktop app is versioned but not published, so only packages with a publishConfig go.
       require-publish-config: true
+      # A retry by hand publishes only a commit whose push CI passed on.
+      ci-workflow: ci.yml
 ```
 
 ## Web apps
