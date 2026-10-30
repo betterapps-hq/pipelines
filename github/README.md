@@ -781,7 +781,9 @@ Outputs: `packages`, those to publish, or that a dry run would, as a JSON array 
 order they're published; and `published`, `true` when pnpm's summary says it published at least one, and `false` when
 there was nothing to publish, the registry had every version by then, in a dry run, or when the run skipped.
 
-Secrets: none. Permissions: `contents: read` and `id-token: write`, which the calling job grants, a dry run's too.
+Secrets: none. Permissions: `contents: read`, `actions: read` (to read `ci-workflow`'s runs) and `id-token: write`,
+which the calling job grants, a dry run's too. A run CI didn't start counts only a passing push run on the default
+branch.
 
 ```yaml
 # .github/workflows/cd-npm.yml, each package's trusted publisher on npmjs.com
@@ -804,6 +806,7 @@ jobs:
       github.event.workflow_run.event == 'push')
     permissions:
       contents: read
+      actions: read
       id-token: write
     uses: betterapps-hq/pipelines/.github/workflows/cd-npm-publish.yml@<commit sha> # <version>
     with:
