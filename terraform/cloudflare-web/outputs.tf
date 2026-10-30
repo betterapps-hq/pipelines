@@ -15,3 +15,8 @@ output "previews" {
     worker      = cloudflare_worker.web[var.previews.worker_of].name
   }
 }
+
+output "extra_workers" {
+  description = "Each extra Worker's name, by key."
+  value       = { for key, worker in cloudflare_worker.extra : key => worker.name }
+}
