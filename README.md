@@ -37,6 +37,21 @@ Planned, in the order repositories need them: previews (`preview-npm`, `preview-
 cleanup), and the rest of delivery (`cd-desktop-build`, `cd-desktop-release`, `cd-desktop-promote`, `cd-web-deploy`,
 `cd-web-promote`).
 
+## Callers
+
+Every repository's pipelines are moving onto these templates, a stage at a time. A repository's own workflows say which
+release they pin.
+
+| Repository                  | Visibility | On the templates                                                                 | Next                                                                |
+| --------------------------- | ---------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Parity (`betterapps-hq`)    | Public     | `ci-verify` on Ubuntu, Windows and macOS                                         | Types and change checks on pull requests; Storybook previews; betas |
+| Buildkit (`AndrewCraswell`) | Public     | `ci-verify`, behind a `verify` gate job; `setup` in its other test jobs          | The release pull request and npm publishing                         |
+| Agency (`AndrewCraswell`)   | Public     | `setup` in its verify job                                                        | `ci-verify`, with `env` for its registry                            |
+| Spawn (`AndrewCraswell`)    | Private    | `ci-verify`, with `prepare` for FFmpeg; `setup` in its browser and template jobs | Previews, staging and production deploys                            |
+| Copacker (`betterapps-hq`)  | Private    | `ci-verify` on Blacksmith runners                                                | Turborepo's remote cache; Neon branches, promotion and Terraform    |
+| Verdun (`AndrewCraswell`)   | Private    | Not yet                                                                          | `ci-verify` with Git LFS                                            |
+| HOA (`AndrewCraswell`)      | Private    | Not yet                                                                          | `ci-verify` with Turborepo's remote cache; previews with migrations |
+
 ## Terraform
 
 Cloud services the templates need come from Terraform, never by hand or from a pipeline.
@@ -58,7 +73,7 @@ Cloud services the templates need come from Terraform, never by hand or from a p
 - **Callers pin a full commit SHA,** with the version in a comment, and Dependabot moves the pins. A pull request can
   then never run a changed copy of a template.
 - **Templates name their own actions in full, pinned to a release's commit,** as they pin third-party actions:
-  `betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.1.0`. In a reusable workflow, `./` is the caller's
+  `betterapps-hq/pipelines/github/actions/setup@<commit sha> # v1.2.0`. In a reusable workflow, `./` is the caller's
   repository. A change to an action is tested directly, and reaches the templates when Dependabot moves their pin to the
   release that has it.
 - **Secrets are passed by name,** never `secrets: inherit`, and each job asks for the least permissions it needs.

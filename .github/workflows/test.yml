@@ -79,6 +79,8 @@ jobs:
         EXAMPLE_ENV=reached the install and every step
       node-options: --max-old-space-size=4096
       concurrency-key: test-${{ github.ref }}
+      # As setup's own test, this repository has no LFS objects, so it proves the input reaches setup cleanly.
+      lfs: true
       vite-task-cache: ${{ matrix.example == 'vite-plus' }}
       prepare: echo prepared > prepared.txt
       cache-path: examples/${{ matrix.example }}/prepared.txt
