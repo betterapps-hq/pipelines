@@ -31,6 +31,13 @@ on:
         description: vite-plus, pnpm, or auto, as the setup action takes it.
         type: string
         default: auto
+      ci-workflow:
+        description: >-
+          The file name of the workflow whose passing run on the commit a run that CI didn't start needs, such as
+          ci.yml, so a workflow_dispatch can't publish a commit whose checks failed or haven't finished. Without it,
+          such a run skips.
+        type: string
+        default: ""
       dry-run:
         description: >-
           Find the packages, build them and run pnpm publish --dry-run, without the environment or publishing. The
@@ -72,19 +79,30 @@ jobs:
       - id: ready
         working-directory: .
         env:
+          GH_TOKEN: ${{ github.token }}
           DRY_RUN: ${{ inputs.dry-run }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           CI_SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
         run: |
-          if [ "$DRY_RUN" != true ] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
-            echo "::notice::Skipped: packages are published only from $DEFAULT_BRANCH, not $GITHUB_REF."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          elif [ "$DRY_RUN" != true ] && [ -n "$CI_SHA" ] && [ "$CI_SHA" != "$GITHUB_SHA" ]; then
-            echo "::notice::Skipped: $DEFAULT_BRANCH has moved on from ${CI_SHA::7} to ${GITHUB_SHA::7}, whose own run publishes it."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+          skip() { echo "::notice::Skipped: $1"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "$DRY_RUN" = true ] && { echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            skip "packages are published only from $DEFAULT_BRANCH, not $GITHUB_REF."
           fi
+          if [ -n "$CI_SHA" ]; then
+            if [ "$CI_SHA" != "$GITHUB_SHA" ]; then
+              skip "$DEFAULT_BRANCH has moved on from ${CI_SHA::7} to ${GITHUB_SHA::7}, whose own run publishes it."
+            fi
+          else
+            # Not started by CI's run, as by a workflow_dispatch: CI has to have passed on this commit's push all the same.
+            [ -n "$CI_WORKFLOW" ] || skip "a run CI didn't start needs ci-workflow, to check CI passed on ${GITHUB_SHA::7}."
+            if ! passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/runs?head_sha=$GITHUB_SHA&event=push&status=success" --jq .total_count); then
+              skip "couldn't read $CI_WORKFLOW's runs; a private repository's caller grants actions: read."
+            fi
+            [ "$passed" -gt 0 ] || skip "$CI_WORKFLOW hasn't passed on ${GITHUB_SHA::7}'s push."
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
       # Finding the packages only reads package.json files and the registry, so only a dry run, which builds, installs.
       # A reusable workflow's ./ is the caller's repository, so it names its own actions in full, pinned to a release's
