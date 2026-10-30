@@ -305,9 +305,10 @@ with `actions/download-artifact` instead of building it again.
 - **It's uploaded only once `command` passes,** and the call fails when the paths match nothing at all. With several
   paths, one that matches nothing while another matches is skipped, so check for what a deploy needs in `command`.
 - **Its paths are relative to the repository,** not `working-directory`, as `actions/upload-artifact` takes them. The
-  artifact holds them from the deepest folder they share, so one folder's contents sit at the artifact's root, and the
-  download goes back where the folder was. Hidden files are left out, and files lose their permissions, so a build with
-  executables in it is packed with `tar` in `command` and the tarball uploaded.
+  artifact holds them from the deepest folder they share, so one folder's contents sit at the artifact's root. The
+  download doesn't know where they came from, so it gives that folder as its `path`, as the example does. Hidden files
+  are left out, and files lose their permissions, so a build with executables in it is packed with `tar` in `command`
+  and the tarball uploaded.
 - **The output is the name,** set only when the upload happened. A later job `needs` the call to read it.
 - **Two calls in one workflow that each upload need an `artifact-name` each:** a second upload under a name replaces the
   first, which is also how a re-run replaces its earlier attempt's.
