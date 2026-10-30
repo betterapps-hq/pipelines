@@ -18,7 +18,9 @@ outputs:
     description: The key the cache is saved under at the end of the job.
     value: ${{ steps.key.outputs.key }}
   restored:
-    description: true when a cache was restored, this job's or another's, and false when there was none.
+    description: >-
+      true when a cache was restored, this job's or another's, and false when there was none. When the folder was
+      already there, only an exact match counts, since what an older cache unpacked over it can't be told apart.
     value: ${{ steps.restored.outputs.restored }}
   cache-hit:
     description: >-
@@ -49,13 +51,16 @@ runs:
           exit 1
         fi
         path="$dir/node_modules/.vite/task-cache"
+        existed=false
         if [ -e "$path" ]; then
+          existed=true
           echo "::warning::$path already exists, so what's restored is unpacked over it. Keep the cache before running vp run."
         fi
         workspace="vite-task-$RUNNER_OS-$RUNNER_ARCH-[$dir]-"
         job="$workspace[$KEY]-"
         {
           echo "path=$path"
+          echo "existed=$existed"
           echo "key=$job$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           echo "restore-keys<<EOF"
           echo "$job"
@@ -76,5 +81,13 @@ runs:
       shell: bash
       env:
         CACHE_PATH: ${{ steps.key.outputs.path }}
+        EXISTED: ${{ steps.key.outputs.existed }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
       run: |
-        if [ -d "$CACHE_PATH" ]; then echo restored=true; else echo restored=false; fi >> "$GITHUB_OUTPUT"
+        if [ "$EXISTED" = true ]; then
+          if [ "$CACHE_HIT" = true ]; then echo restored=true; else echo restored=false; fi
+        elif [ -d "$CACHE_PATH" ]; then
+          echo restored=true
+        else
+          echo restored=false
+        fi >> "$GITHUB_OUTPUT"

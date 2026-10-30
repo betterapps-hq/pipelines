@@ -71,11 +71,11 @@ could only wrap a whole job, as ci-verify does.
 | `working-directory` | `.`          | The workspace's root, relative to the repository's: in a monorepo, the root, not a package.         |
 | `key`               | `github.job` | What tells this job's caches from others', such as a matrix value where a job runs on one OS twice. |
 
-| Output      | What it is                                                                                                |
-| ----------- | --------------------------------------------------------------------------------------------------------- |
-| `key`       | The key the cache is saved under at the end of the job.                                                   |
-| `restored`  | `true` when a cache was restored, this job's or another's; `false` when there was none.                   |
-| `cache-hit` | `true` when a cache was saved under this very key already, as by an earlier job in the run with that key. |
+| Output      | What it is                                                                                                                                           |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`       | The key the cache is saved under at the end of the job.                                                                                              |
+| `restored`  | `true` when a cache was restored, this job's or another's; `false` when there was none. If the folder was already there, only an exact match counts. |
+| `cache-hit` | `true` when a cache was saved under this very key already, as by an earlier job in the run with that key.                                            |
 
 Permissions: none of its own. The cache uses the runner's own token.
 
