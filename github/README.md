@@ -316,7 +316,7 @@ with `actions/download-artifact` instead of building it again.
 ```yaml
 jobs:
   verify:
-    uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.8.0
+    uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.10.0
     with:
       # pnpm verify builds the client into apps/client/dist.
       artifact-path: apps/client/dist
