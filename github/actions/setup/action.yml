@@ -73,7 +73,8 @@ runs:
         path: ${{ steps.lfs.outputs.path }}
         key: lfs-${{ runner.os }}-${{ steps.lfs.outputs.hash }}
         restore-keys: lfs-${{ runner.os }}-
-    # The checkout keeps no credentials, so the pull is given the token for itself alone, as a header no later step sees.
+    # setup's checkout keeps no credentials, so the pull is given the token for itself alone, as a header no later step
+    # sees. A checkout of the caller's own that kept them already has a header, and a second would be refused.
     - if: inputs.lfs == 'true'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
@@ -81,6 +82,10 @@ runs:
         TOKEN: ${{ inputs.token }}
         SERVER: ${{ github.server_url }}
       run: |
+        if git config --get-regexp '^(http\..*\.extraheader|includeif\..*)$' > /dev/null; then
+          git lfs pull
+          exit
+        fi
         basic=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
         echo "::add-mask::$basic"
         git -c "http.$SERVER/.extraheader=AUTHORIZATION: basic $basic" lfs pull
