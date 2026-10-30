@@ -133,7 +133,8 @@ jobs:
             compatibility_date: "2026-10-01",
             assets: { directory: $dir, not_found_handling: "404-page" },
             workers_dev: true,
-            preview_urls: true
+            preview_urls: true,
+            previews: {}
           }' > "$config"
           if [ -n "$PREVIEW_NAME" ]; then
             npx --yes "wrangler@$WRANGLER_VERSION" preview --config "$config" --name "$PREVIEW_NAME" 2>&1 | tee publish.log
