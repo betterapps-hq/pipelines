@@ -1,8 +1,14 @@
 name: Verify
 
-# Runs a workspace's verify script on each operating system the caller lists. github/README.md shows a caller.
+# Runs a workspace's verify script on each operating system the caller lists, and can hand what it builds to a later job
+# as an artifact. github/README.md shows a caller.
 on:
   workflow_call:
+    outputs:
+      artifact-name:
+        description:
+          The name of the artifact artifact-path uploaded, for actions/download-artifact. Empty when none was.
+        value: ${{ jobs.verify.outputs.artifact-name }}
     inputs:
       os:
         description: The runners to verify on, as a JSON array of labels.
@@ -75,6 +81,26 @@ on:
           workflow that run different tasks. Each job is named verify inside this workflow, so it can't tell itself.
         type: string
         default: verify
+      artifact-path:
+        description: >-
+          Paths to upload as an artifact once the command passes, one per line, relative to the repository, such as a
+          build a later job deploys. Nothing is uploaded when it's empty.
+        type: string
+        default: ""
+      artifact-name:
+        description: >-
+          The artifact's name. Two calls in one workflow that each upload one need names of their own, as a second
+          upload under a name replaces the first.
+        type: string
+        default: build
+      artifact-os:
+        description: The runner in os that uploads the artifact, as only one can. Empty for the first in os.
+        type: string
+        default: ""
+      artifact-retention-days:
+        description: Days the artifact is kept; 0 for the repository's setting.
+        type: number
+        default: 0
     secrets:
       TURBO_TOKEN:
         description:
@@ -96,6 +122,9 @@ jobs:
         os: ${{ fromJSON(inputs.os) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    # Only the runner that uploads sets it, and an empty output doesn't replace another runner's, so it's well-defined.
+    outputs:
+      artifact-name: ${{ steps.upload.outputs.artifact-id && inputs.artifact-name || '' }}
     # One group per runner, so the matrix's runs don't cancel each other.
     concurrency:
       group:
@@ -107,6 +136,15 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory }}
     steps:
+      # Otherwise no runner would upload, and a later job would find nothing to download.
+      - if: inputs.artifact-path != '' && inputs.artifact-os != '' && !contains(fromJSON(inputs.os), inputs.artifact-os)
+        working-directory: .
+        env:
+          ARTIFACT_OS: ${{ inputs.artifact-os }}
+        run: |
+          echo "::error::artifact-os has to be one of os, and $ARTIFACT_OS isn't."
+          exit 1
+
       # Before checking out, so the install sees them; the working directory doesn't exist yet.
       - if: inputs.env != ''
         working-directory: .
@@ -165,3 +203,15 @@ jobs:
         run: |
           for name in NODE_OPTIONS TURBO_TOKEN TURBO_REMOTE_CACHE_SIGNATURE_KEY; do [ -n "${!name}" ] || unset "$name"; done
           eval "$CI_VERIFY_SCRIPT"
+
+      # From one runner, as two uploads under one name would collide; the paths are relative to the repository, as
+      # upload-artifact takes them. overwrite lets a re-run replace what its earlier attempt uploaded.
+      - id: upload
+        if: inputs.artifact-path != '' && matrix.os == (inputs.artifact-os || fromJSON(inputs.os)[0])
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: ${{ inputs.artifact-retention-days }}
+          if-no-files-found: error
+          overwrite: true

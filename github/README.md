@@ -200,24 +200,28 @@ A reusable workflow. It runs the workspace's `pnpm verify` on each operating sys
 of its own, so one failing doesn't stop the others. A newer push to the same branch or pull request cancels the run
 before it.
 
-| Input                 | Default             | What it's for                                                                           |
-| --------------------- | ------------------- | --------------------------------------------------------------------------------------- |
-| `os`                  | `["ubuntu-latest"]` | The runners to verify on, as a JSON array of labels.                                    |
-| `command`             | `pnpm verify`       | What verifies the workspace.                                                            |
-| `working-directory`   | `.`                 | The workspace's root, relative to the repository's.                                     |
-| `prepare`             | (empty)             | Shell commands run after the install and before `command`.                              |
-| `cache-path`          | (empty)             | More paths to cache, one per line, relative to the repository: what `prepare` installs. |
-| `cache-key-files`     | (empty)             | A glob of the files that key that cache, relative to the repository.                    |
-| `fetch-depth`         | `1`                 | Commits of history to fetch; `0` for Beachball's checks.                                |
-| `lfs`                 | `false`             | Fetch the repository's Git LFS objects, cached until one changes.                       |
-| `toolchain`           | `auto`              | As the setup action takes it.                                                           |
-| `timeout-minutes`     | `30`                | How long each runner gets.                                                              |
-| `cancel-in-progress`  | `true`              | Cancel an older run on the same branch or pull request.                                 |
-| `concurrency-key`     | (empty)             | What runs are grouped by in place of the branch or pull request, such as the run's ID.  |
-| `env`                 | (empty)             | `NAME=value` lines set before the install, for every step. Not for secrets.             |
-| `node-options`        | (empty)             | `NODE_OPTIONS` for `prepare` and `command`, such as `--max-old-space-size=8192`.        |
-| `vite-task-cache`     | `false`             | Keep Vite+'s task cache between runs, restored from the newest. Only `vp run` uses it.  |
-| `vite-task-cache-key` | `verify`            | Tells this call's task caches from another call's on the same system and workspace.     |
+| Input                     | Default             | What it's for                                                                           |
+| ------------------------- | ------------------- | --------------------------------------------------------------------------------------- |
+| `os`                      | `["ubuntu-latest"]` | The runners to verify on, as a JSON array of labels.                                    |
+| `command`                 | `pnpm verify`       | What verifies the workspace.                                                            |
+| `working-directory`       | `.`                 | The workspace's root, relative to the repository's.                                     |
+| `prepare`                 | (empty)             | Shell commands run after the install and before `command`.                              |
+| `cache-path`              | (empty)             | More paths to cache, one per line, relative to the repository: what `prepare` installs. |
+| `cache-key-files`         | (empty)             | A glob of the files that key that cache, relative to the repository.                    |
+| `fetch-depth`             | `1`                 | Commits of history to fetch; `0` for Beachball's checks.                                |
+| `lfs`                     | `false`             | Fetch the repository's Git LFS objects, cached until one changes.                       |
+| `toolchain`               | `auto`              | As the setup action takes it.                                                           |
+| `timeout-minutes`         | `30`                | How long each runner gets.                                                              |
+| `cancel-in-progress`      | `true`              | Cancel an older run on the same branch or pull request.                                 |
+| `concurrency-key`         | (empty)             | What runs are grouped by in place of the branch or pull request, such as the run's ID.  |
+| `env`                     | (empty)             | `NAME=value` lines set before the install, for every step. Not for secrets.             |
+| `node-options`            | (empty)             | `NODE_OPTIONS` for `prepare` and `command`, such as `--max-old-space-size=8192`.        |
+| `vite-task-cache`         | `false`             | Keep Vite+'s task cache between runs, restored from the newest. Only `vp run` uses it.  |
+| `vite-task-cache-key`     | `verify`            | Tells this call's task caches from another call's on the same system and workspace.     |
+| `artifact-path`           | (empty)             | Paths to upload once `command` passes, one per line, relative to the repository.        |
+| `artifact-name`           | `build`             | The artifact's name.                                                                    |
+| `artifact-os`             | (empty)             | The runner in `os` that uploads it; empty for the first in `os`.                        |
+| `artifact-retention-days` | `0`                 | Days the artifact is kept; `0` for the repository's setting.                            |
 
 | Secret                             | What it's for                                                                    |
 | ---------------------------------- | -------------------------------------------------------------------------------- |
@@ -226,6 +230,10 @@ before it.
 
 Both are optional, passed by name, and reach only `prepare` and `command`, never the install and its scripts.
 Permissions: `contents: read`.
+
+| Output          | What it is                                                                            |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `artifact-name` | The name of the artifact `artifact-path` uploaded, or empty when nothing was uploaded |
 
 - **Commands run in bash on every system,** Windows included.
 - **`env` is for settings the install needs,** such as `PNPM_CONFIG_REGISTRY` when a committed `.npmrc` points at a
@@ -285,6 +293,45 @@ jobs:
         TURBO_TEAM=team_example
     secrets:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+```
+
+### Handing a build to a later job
+
+`artifact-path` uploads what `command` built, so a later job in the caller's workflow, such as a deploy, downloads it
+with `actions/download-artifact` instead of building it again.
+
+- **One runner uploads it:** `artifact-os`, or the first in `os` when that's empty, since two uploads under one name
+  would collide. One that isn't in `os` fails the call rather than uploading nothing.
+- **It's uploaded only once `command` passes,** and a path that matches nothing fails the call.
+- **Its paths are relative to the repository,** not `working-directory`, as `actions/upload-artifact` takes them. The
+  artifact holds them from the deepest folder they share, so one folder's contents sit at the artifact's root, and the
+  download goes back where the folder was. Hidden files are left out.
+- **The output is the name,** set only when the upload happened. A later job `needs` the call to read it.
+- **Two calls in one workflow that each upload need an `artifact-name` each:** a second upload under a name replaces the
+  first, which is also how a re-run replaces its earlier attempt's.
+
+```yaml
+jobs:
+  verify:
+    uses: betterapps-hq/pipelines/.github/workflows/ci-verify.yml@<commit sha> # v1.8.0
+    with:
+      # pnpm verify builds the client into apps/client/dist.
+      artifact-path: apps/client/dist
+      artifact-name: client
+
+  deploy:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<commit sha> # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@<commit sha> # v8.0.2
+        with:
+          name: ${{ needs.verify.outputs.artifact-name }}
+          path: apps/client/dist
+      - run: ./deploy.sh apps/client/dist
 ```
 
 ## publish-storybook

@@ -172,6 +172,40 @@ jobs:
         test -f prepared.txt
         ${{ matrix.verify }}
 
+  # A build handed to a later job: each runner builds, and only artifact-os uploads, though it's listed second. Each
+  # build says where it ran, so the job after it shows the artifact is ubuntu's, whole, under the name the output gives.
+  ci-verify-artifact:
+    name: ci-verify (artifact)
+    uses: ./.github/workflows/ci-verify.yml
+    with:
+      os: '["windows-latest", "ubuntu-latest"]'
+      working-directory: examples/pnpm
+      concurrency-key: test-artifact-${{ github.ref }}
+      command: |
+        pnpm verify
+        mkdir -p dist/assets
+        echo "$RUNNER_OS" > dist/assets/built-on.txt
+      artifact-path: examples/pnpm/dist
+      artifact-name: test-build
+      artifact-os: ubuntu-latest
+      artifact-retention-days: 1
+
+  ci-verify-artifact-downloaded:
+    name: Check ci-verify's artifact downloads
+    needs: ci-verify-artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the output names the artifact
+        env:
+          NAME: ${{ needs.ci-verify-artifact.outputs.artifact-name }}
+        run: test "$NAME" = test-build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.ci-verify-artifact.outputs.artifact-name }}
+          path: examples/pnpm/dist
+      - name: Check it's the build from ubuntu
+        run: test "$(cat examples/pnpm/dist/assets/built-on.txt)" = Linux
+
   # The vite-task-cache action from this commit, with the Vite+ example's tasks, on each system. This job runs them twice
   # and the second time has to replay both, which shows they're tracked stably there, Windows included. Its cache is
   # saved at the end, and the next job restores it on a fresh runner, where both have to replay again.
@@ -523,6 +557,8 @@ jobs:
       - setup
       - setup-checkout
       - ci-verify
+      - ci-verify-artifact
+      - ci-verify-artifact-downloaded
       - vite-task-cache
       - vite-task-cache-restore
       - publish-storybook
