@@ -19,6 +19,11 @@ inputs:
       on a Blacksmith runner's disk between runs, or auto, which picks blacksmith on a Blacksmith runner and actions
       everywhere else.
     default: auto
+  dissociate:
+    description: >-
+      Copy the objects Blacksmith's checkout uses from its mirror into the repository, for a later Docker-based action
+      that runs Git and can't see the mirror. Only Blacksmith's checkout takes it.
+    default: "false"
   working-directory:
     description: The workspace's root, relative to the repository's.
     default: .
@@ -83,6 +88,7 @@ runs:
         ref: ${{ inputs.ref }}
         fetch-depth: ${{ inputs.fetch-depth }}
         persist-credentials: false
+        dissociate: ${{ inputs.dissociate }}
     # On Windows, Blacksmith's checkout deletes its credentials file but leaves the includeIf naming it, since it unsets
     # the entry by a path whose backslashes Git reads as a pattern. It names nothing, but the LFS pull would take it for
     # a caller's credentials, so includes of files that don't exist go.

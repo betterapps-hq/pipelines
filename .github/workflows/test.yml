@@ -84,6 +84,8 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: "2"
           checkout-action: ${{ matrix.checkout-action }}
+          # Only Blacksmith's checkout takes it, and only uses it on Blacksmith's runners.
+          dissociate: ${{ matrix.checkout-action == 'blacksmith' }}
           working-directory: examples/pnpm
           install: "false"
           # The LFS pull needs a token of its own when the checkout kept none.

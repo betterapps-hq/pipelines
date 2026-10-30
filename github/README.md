@@ -23,7 +23,9 @@ and installs its dependencies from the lockfile, with caches.
 - **On a Blacksmith runner it checks out with `useblacksmith/checkout`,** Blacksmith's fork of `actions/checkout`, which
   keeps a mirror of the repository on the runner's disk between runs and fetches only what's new. It's picked where
   `BLACKSMITH_VM_ID` is set, as Blacksmith's runners set it, and `checkout-action` picks one outright. Caches need
-  nothing of Blacksmith's: its runners serve `actions/cache`, and the setup actions that use it, from their own.
+  nothing of Blacksmith's: its runners serve `actions/cache`, and the setup actions that use it, from their own. The
+  repository borrows the mirror's objects, so a later Docker-based action that runs Git, and can't see the mirror, needs
+  `dissociate`.
 
 | Input               | Default        | What it's for                                                                    |
 | ------------------- | -------------- | -------------------------------------------------------------------------------- |
@@ -31,6 +33,7 @@ and installs its dependencies from the lockfile, with caches.
 | `ref`               | (empty)        | The commit, branch or tag to check out; empty is the one that started the run.   |
 | `fetch-depth`       | `1`            | Commits of history to fetch; `0` fetches all of it, which Beachball needs.       |
 | `checkout-action`   | `auto`         | `actions`, `blacksmith`, or `auto`, which picks `blacksmith` on Blacksmith.      |
+| `dissociate`        | `false`        | Copy Blacksmith's mirrored objects in, for a later Docker-based action's Git.    |
 | `working-directory` | `.`            | The workspace's root, relative to the repository's.                              |
 | `toolchain`         | `auto`         | `vite-plus`, `pnpm`, or `auto`, which looks for `vite-plus` in the workspace.    |
 | `install`           | `true`         | Install the workspace's dependencies, with their cache.                          |
