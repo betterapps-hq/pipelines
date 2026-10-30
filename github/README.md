@@ -708,8 +708,8 @@ on later pushes.
   run with its direct URL in `DATABASE_URL`, and the preview gets its pooled URL as the Worker secret `database-secret`
   names.
 - **Neon deletes the branch itself** 7 days after the last push, should cleanup never run. Only a branch with exactly
-  the preview's name, made from `NEON_PARENT_BRANCH_ID`, that isn't the project's default or protected, is ever reused
-  or deleted.
+  the preview's name that isn't the project's default or protected is ever reused or deleted, and with
+  `NEON_PARENT_BRANCH_ID` set, only one made from it.
 - **The Worker's config needs a `previews` block,** which says the preview's bindings and vars; Wrangler refuses without
   one. Its `preview_urls` has to be on for the preview to have a URL.
 - **A pull request that closed or moved on is skipped,** checked once the build is done, so a rerun of an old run can't
@@ -989,7 +989,8 @@ adding another. The preview templates do the same steps, and move to this action
 
 Output: `comment-id`, empty when there was none and `create` was false.
 
-Permissions: `pull-requests: write`.
+Secrets: `token`, which is `github.token` unless the caller passes another from its secrets. Permissions:
+`pull-requests: write`.
 
 ```yaml
 - uses: betterapps-hq/pipelines/github/actions/pr-comment@<commit sha> # v1.4.0

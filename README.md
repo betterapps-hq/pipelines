@@ -27,7 +27,7 @@ fix lands in one place instead of being copied between repositories.
 | `.github/workflows/ci-verify.yml`           | Reusable workflow | Runs the workspace's `pnpm verify` on each operating system the caller lists                                |
 | `.github/workflows/publish-storybook.yml`   | Reusable workflow | Publishes a Storybook to the environment the caller names: a pull request's preview, staging or production  |
 | `.github/workflows/unpublish-storybook.yml` | Reusable workflow | Deletes a pull request's Storybook preview                                                                  |
-| `.github/workflows/preview-web.yml`         | Reusable workflow | Publishes a pull request's web app as a Worker preview, with a Neon branch of its own, and comments its URL |
+| `.github/workflows/preview-web.yml`         | Reusable workflow | Publishes a pull request's web app as a Worker preview, optionally with a Neon branch, and comments its URL |
 | `.github/workflows/preview-web-cleanup.yml` | Reusable workflow | Deletes a pull request's web app preview and its Neon branch                                                |
 | `.github/workflows/terraform-plan.yml`      | Reusable workflow | Plans a pull request's Terraform project against its state in R2, and comments a summary of the plan        |
 | `.github/workflows/terraform-apply.yml`     | Reusable workflow | Applies a Terraform project in a GitHub environment, such as from `main` after a merge                      |
