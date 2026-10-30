@@ -27,6 +27,9 @@ inputs:
   lfs:
     description: Fetch the repository's Git LFS objects after checking out, cached until they change.
     default: "false"
+  token:
+    description: The token Git LFS fetches objects with, which a private repository needs. Only that command gets it.
+    default: ${{ github.token }}
 
 outputs:
   toolchain:
@@ -70,10 +73,17 @@ runs:
         path: ${{ steps.lfs.outputs.path }}
         key: lfs-${{ runner.os }}-${{ steps.lfs.outputs.hash }}
         restore-keys: lfs-${{ runner.os }}-
+    # The checkout keeps no credentials, so the pull is given the token for itself alone, as a header no later step sees.
     - if: inputs.lfs == 'true'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: git lfs pull
+      env:
+        TOKEN: ${{ inputs.token }}
+        SERVER: ${{ github.server_url }}
+      run: |
+        basic=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+        echo "::add-mask::$basic"
+        git -c "http.$SERVER/.extraheader=AUTHORIZATION: basic $basic" lfs pull
 
     - id: toolchain
       shell: bash

@@ -18,17 +18,19 @@ and installs its dependencies from the lockfile, with caches.
   `voidzero-dev/setup-vp`, which installs Vite+, Node and pnpm and caches the dependencies.
 - **pnpm workspaces** get pnpm at `package.json`'s `packageManager` version, then Node with pnpm's store cached.
 - **The install is frozen:** a lockfile that doesn't match `package.json` fails the step.
-- **The checkout keeps no credentials,** so later steps can't push with the job's token.
+- **The checkout keeps no credentials,** so later steps can't push with the job's token. With `lfs`, only the LFS pull
+  gets a token, as a header for that one command.
 
-| Input               | Default | What it's for                                                                  |
-| ------------------- | ------- | ------------------------------------------------------------------------------ |
-| `checkout`          | `true`  | Check out the repository first. Turn it off when the job already has.          |
-| `ref`               | (empty) | The commit, branch or tag to check out; empty is the one that started the run. |
-| `fetch-depth`       | `1`     | Commits of history to fetch; `0` fetches all of it, which Beachball needs.     |
-| `working-directory` | `.`     | The workspace's root, relative to the repository's.                            |
-| `toolchain`         | `auto`  | `vite-plus`, `pnpm`, or `auto`, which looks for `vite-plus` in the workspace.  |
-| `install`           | `true`  | Install the workspace's dependencies, with their cache.                        |
-| `lfs`               | `false` | Fetch the repository's Git LFS objects, cached until one changes.              |
+| Input               | Default        | What it's for                                                                    |
+| ------------------- | -------------- | -------------------------------------------------------------------------------- |
+| `checkout`          | `true`         | Check out the repository first. Turn it off when the job already has.            |
+| `ref`               | (empty)        | The commit, branch or tag to check out; empty is the one that started the run.   |
+| `fetch-depth`       | `1`            | Commits of history to fetch; `0` fetches all of it, which Beachball needs.       |
+| `working-directory` | `.`            | The workspace's root, relative to the repository's.                              |
+| `toolchain`         | `auto`         | `vite-plus`, `pnpm`, or `auto`, which looks for `vite-plus` in the workspace.    |
+| `install`           | `true`         | Install the workspace's dependencies, with their cache.                          |
+| `lfs`               | `false`        | Fetch the repository's Git LFS objects, cached until one changes.                |
+| `token`             | `github.token` | The token Git LFS fetches with, for a private repository; only the pull gets it. |
 
 Output: `toolchain`, the one it set up.
 
