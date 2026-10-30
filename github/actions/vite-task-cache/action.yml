@@ -1,0 +1,80 @@
+name: Keep Vite Task's cache
+description: >-
+  Restores a Vite+ workspace's task cache from the newest one saved for the same system and workspace, and saves it at
+  the end of the job when every step passed, so vp run replays tasks whose inputs haven't changed.
+
+inputs:
+  working-directory:
+    description: The workspace's root, relative to the repository's, whose node_modules/.vite/task-cache is kept.
+    default: .
+  key:
+    description: >-
+      What tells this job's caches from others' in the same workspace, such as a matrix value where a job runs on one
+      system more than once. The newest of these is restored first, then the newest of any job's.
+    default: ${{ github.job }}
+
+outputs:
+  key:
+    description: The key the cache is saved under at the end of the job.
+    value: ${{ steps.key.outputs.key }}
+  restored:
+    description: true when a cache was restored, this job's or another's, and false when there was none.
+    value: ${{ steps.restored.outputs.restored }}
+  cache-hit:
+    description: >-
+      true when a cache was saved under this very key, as by an earlier job in the same run with the same key, in which
+      case it isn't saved again.
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # The key is the system, the workspace and the job, which the restore keys fall back through, then this run and
+    # attempt, since a saved cache never changes and each run saves a new one. What the tasks read stays out of it: Vite
+    # Task fingerprints that itself and replays only the tasks that still match, so a key on, say, the lockfile would
+    # only skip caches that would have helped. The workspace and job are bracketed, so one name that starts another,
+    # such as build and build-storybook, never matches its prefix.
+    - id: key
+      shell: bash
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        KEY: ${{ inputs.key }}
+      run: |
+        dir="${WORKING_DIRECTORY//\\//}"
+        dir="${dir#./}"
+        while [[ "$dir" == */ ]]; do dir="${dir%/}"; done
+        [ -n "$dir" ] || dir=.
+        if [[ "$dir$KEY" == *,* ]]; then
+          echo "::error::A cache key can't have a comma, so neither can working-directory or key."
+          exit 1
+        fi
+        path="$dir/node_modules/.vite/task-cache"
+        if [ -e "$path" ]; then
+          echo "::warning::$path already exists, so what's restored is unpacked over it. Keep the cache before running vp run."
+        fi
+        workspace="vite-task-$RUNNER_OS-$RUNNER_ARCH-[$dir]-"
+        job="$workspace[$KEY]-"
+        {
+          echo "path=$path"
+          echo "key=$job$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "restore-keys<<EOF"
+          echo "$job"
+          echo "$workspace"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    # actions/cache restores now and saves in its post step, at the end of the job, and only if every step passed:
+    # its post-if is success(). Pull requests from forks get a read-only cache token, so they restore and don't save.
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.path }}
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.restore-keys }}
+
+    - id: restored
+      shell: bash
+      env:
+        CACHE_PATH: ${{ steps.key.outputs.path }}
+      run: |
+        if [ -d "$CACHE_PATH" ]; then echo restored=true; else echo restored=false; fi >> "$GITHUB_OUTPUT"
