@@ -78,10 +78,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A pull request's head rather than the merge commit the run starts from, so it's only checked out if ref arrives.
       - id: setup
         uses: ./github/actions/setup
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: "2"
           checkout-action: ${{ matrix.checkout-action }}
           # Only Blacksmith's checkout takes it, and only uses it on Blacksmith's runners.
@@ -97,7 +98,7 @@ jobs:
         run: test "$ACTION" = "$EXPECTED"
       - name: Check the ref and depth reached the checkout
         env:
-          SHA: ${{ github.sha }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$SHA"
           test "$(git rev-parse --is-shallow-repository)" = true
@@ -122,6 +123,23 @@ jobs:
         env:
           OUTCOME: ${{ steps.unknown.outcome }}
         run: test "$OUTCOME" = failure
+      # As on a Blacksmith runner, where auto has to pick Blacksmith's checkout. Only the choice is checked: without
+      # Blacksmith's agent its checkout falls back to a plain one, but this isn't the runner it's meant for.
+      - name: Set up as on a Blacksmith runner
+        id: blacksmith
+        if: matrix.checkout-action == 'auto' && runner.os == 'Linux'
+        continue-on-error: true
+        uses: ./github/actions/setup
+        env:
+          BLACKSMITH_VM_ID: test
+        with:
+          working-directory: examples/pnpm
+          install: "false"
+      - name: Check auto picked Blacksmith's checkout
+        if: always() && steps.blacksmith.conclusion == 'success'
+        env:
+          ACTION: ${{ steps.blacksmith.outputs.checkout-action }}
+        run: test "$ACTION" = blacksmith
 
   ci-verify:
     name: ci-verify (${{ matrix.example }})
