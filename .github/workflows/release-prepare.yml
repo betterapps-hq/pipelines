@@ -138,9 +138,9 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           toolchain: ${{ inputs.toolchain }}
       # A checkout of a commit leaves no branch, so hooks and checks that compare with origin/<base>, as Beachball's and
-      # many change-file checks do, would find nothing at the release commit. The commit is the base's head, so the ref
-      # is made here, without fetching.
-      - if: steps.ready.outputs.ready == 'true'
+      # many change-file checks do, would find nothing at the release commit. The ready check made sure the commit is the
+      # base's head, so the ref is made here, without fetching. A dry run makes no commit, and doesn't check, so skips it.
+      - if: steps.ready.outputs.ready == 'true' && !inputs.dry-run
         env:
           BASE: ${{ inputs.base }}
           COMMIT: ${{ steps.ready.outputs.commit }}
