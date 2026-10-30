@@ -60,6 +60,87 @@ jobs:
         working-directory: examples/${{ matrix.example }}
         run: pnpm verify
 
+  # setup's own checkout, with each checkout action, over the checkout that brought the action. These are GitHub's
+  # runners, so auto has to pick actions/checkout, and Blacksmith's checks out as actions/checkout does: its mirror is
+  # used only on Blacksmith's runners, which this repository doesn't have.
+  setup-checkout:
+    name: setup checkout (${{ matrix.checkout-action }}, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        checkout-action: [auto, actions, blacksmith]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A pull request's head rather than the merge commit the run starts from, so it's only checked out if ref arrives.
+      - id: setup
+        uses: ./github/actions/setup
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: "2"
+          checkout-action: ${{ matrix.checkout-action }}
+          # Only Blacksmith's checkout takes it, and only uses it on Blacksmith's runners.
+          dissociate: ${{ matrix.checkout-action == 'blacksmith' }}
+          working-directory: examples/pnpm
+          install: "false"
+          # The LFS pull needs a token of its own when the checkout kept none.
+          lfs: "true"
+      - name: Check which action checked out
+        env:
+          ACTION: ${{ steps.setup.outputs.checkout-action }}
+          EXPECTED: ${{ matrix.checkout-action == 'auto' && 'actions' || matrix.checkout-action }}
+        run: test "$ACTION" = "$EXPECTED"
+      - name: Check the ref and depth reached the checkout
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SHA"
+          test "$(git rev-parse --is-shallow-repository)" = true
+          test "$(git rev-list --first-parent --count HEAD)" = 2
+      - name: Check the checkout kept no credentials
+        run: |
+          if git config --get-regexp '^(http\..*\.extraheader|includeif\..*)$'; then exit 1; fi
+      - name: Check Windows keeps LF
+        if: runner.os == 'Windows'
+        run: test "$(git config --global core.autocrlf)" = false
+      - name: Set up with an unknown checkout action
+        id: unknown
+        if: matrix.checkout-action == 'auto' && runner.os == 'Linux'
+        continue-on-error: true
+        uses: ./github/actions/setup
+        with:
+          checkout-action: github
+          working-directory: examples/pnpm
+          install: "false"
+      - name: Check an unknown checkout action fails
+        if: steps.unknown.conclusion == 'success'
+        env:
+          OUTCOME: ${{ steps.unknown.outcome }}
+        run: test "$OUTCOME" = failure
+      # As on a Blacksmith runner, where auto has to pick Blacksmith's checkout. Only the choice is checked: without
+      # Blacksmith's agent its checkout falls back to a plain one, but this isn't the runner it's meant for.
+      - name: Set up as on a Blacksmith runner
+        id: blacksmith
+        if: matrix.checkout-action == 'auto' && runner.os == 'Linux'
+        continue-on-error: true
+        uses: ./github/actions/setup
+        env:
+          BLACKSMITH_VM_ID: test
+        with:
+          working-directory: examples/pnpm
+          install: "false"
+      - name: Check auto picked Blacksmith's checkout
+        if: always() && steps.blacksmith.conclusion == 'success'
+        env:
+          ACTION: ${{ steps.blacksmith.outputs.checkout-action }}
+        run: test "$ACTION" = blacksmith
+
   ci-verify:
     name: ci-verify (${{ matrix.example }})
     strategy:
@@ -440,6 +521,7 @@ jobs:
     needs:
       - lint
       - setup
+      - setup-checkout
       - ci-verify
       - vite-task-cache
       - vite-task-cache-restore

@@ -13,6 +13,17 @@ inputs:
   fetch-depth:
     description: Commits of history to fetch; 0 fetches all of it, which Beachball's checks need.
     default: "1"
+  checkout-action:
+    description: >-
+      What checks out: actions for actions/checkout, blacksmith for useblacksmith/checkout, which keeps the repository
+      on a Blacksmith runner's disk between runs, or auto, which picks blacksmith on a Blacksmith runner and actions
+      everywhere else.
+    default: auto
+  dissociate:
+    description: >-
+      Copy the objects Blacksmith's checkout uses from its mirror into the repository, for a later Docker-based action
+      that runs Git and can't see the mirror. Only Blacksmith's checkout takes it.
+    default: "false"
   working-directory:
     description: The workspace's root, relative to the repository's.
     default: .
@@ -35,21 +46,66 @@ outputs:
   toolchain:
     description: The toolchain that was set up, vite-plus or pnpm.
     value: ${{ steps.toolchain.outputs.toolchain }}
+  checkout-action:
+    description: The action that checked out, actions or blacksmith, or empty when setup didn't check out.
+    value: ${{ steps.checkout.outputs.action }}
 
 runs:
   using: composite
   steps:
+    # Blacksmith's runners set BLACKSMITH_VM_ID, which is what its checkout looks for too. It isn't in the env context,
+    # so a shell step reads it.
+    - if: inputs.checkout == 'true'
+      id: checkout
+      shell: bash
+      env:
+        CHECKOUT_ACTION: ${{ inputs.checkout-action }}
+      run: |
+        if [ "$CHECKOUT_ACTION" = auto ]; then
+          if [ -n "${BLACKSMITH_VM_ID:-}" ]; then CHECKOUT_ACTION=blacksmith; else CHECKOUT_ACTION=actions; fi
+        fi
+        case "$CHECKOUT_ACTION" in
+          actions | blacksmith) echo "action=$CHECKOUT_ACTION" >> "$GITHUB_OUTPUT" ;;
+          *) echo "::error::checkout-action is actions, blacksmith or auto, not '$CHECKOUT_ACTION'." && exit 1 ;;
+        esac
     # Windows runners turn LF into CRLF on checkout, which formatters then report on every file. A repository's
     # .gitattributes wins over this either way.
     - if: inputs.checkout == 'true' && runner.os == 'Windows'
       shell: bash
       run: git config --global core.autocrlf false
-    - if: inputs.checkout == 'true'
+    - if: steps.checkout.outputs.action == 'actions'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ inputs.ref }}
         fetch-depth: ${{ inputs.fetch-depth }}
         persist-credentials: false
+    # Blacksmith's fork of actions/checkout, with the same inputs. On a Blacksmith runner it fetches through a mirror of
+    # the repository kept on the runner's disk and refreshes it after the job; anywhere else it checks out as
+    # actions/checkout does. Caches need nothing of Blacksmith's: its runners serve actions/cache's from their own.
+    - if: steps.checkout.outputs.action == 'blacksmith'
+      uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1.8.1
+      with:
+        ref: ${{ inputs.ref }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        persist-credentials: false
+        dissociate: ${{ inputs.dissociate }}
+    # On Windows, Blacksmith's checkout deletes its credentials file but leaves the includeIf naming it, since it unsets
+    # the entry by a path whose backslashes Git reads as a pattern. It names nothing, but the LFS pull would take it for
+    # a caller's credentials, so includes of checkout's credentials files that no longer exist go. Each entry is read
+    # whole, since the key holds the workspace's path and either can have spaces. Git Bash mustn't rewrite the container
+    # paths it also writes, such as /github/runner_temp, or Git wouldn't find them to unset.
+    - if: steps.checkout.outputs.action == 'blacksmith'
+      shell: bash
+      env:
+        MSYS_NO_PATHCONV: "1"
+      run: |
+        while IFS= read -r -d '' entry; do
+          key=${entry%%$'\n'*}
+          path=${entry#*$'\n'}
+          case "${path//\\//}" in
+            */git-credentials-*.config) [ -e "$path" ] || git config --local --fixed-value --unset "$key" "$path" ;;
+          esac
+        done < <(git config --local --null --get-regexp '^includeif\.gitdir:' || true)
 
     # LFS objects are cached by the list of them and the fetch filters, so they're downloaded only when one changes.
     # Git hashes them, since every system has it. The cache is where Git LFS keeps its objects, which it reports, and
