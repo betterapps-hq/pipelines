@@ -48,15 +48,15 @@ rest of delivery (`cd-desktop-build`, `cd-desktop-release`, `cd-desktop-promote`
 Every repository's pipelines are moving onto these templates, a stage at a time. A repository's own workflows say which
 release they pin.
 
-| Repository                  | Visibility | On the templates                                                                 | Next                                                                |
-| --------------------------- | ---------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Parity (`betterapps-hq`)    | Public     | `ci-verify` on Ubuntu, Windows and macOS                                         | Types and change checks on pull requests; Storybook previews; betas |
-| Buildkit (`AndrewCraswell`) | Public     | `ci-verify`, behind a `verify` gate job; `setup` in its other test jobs          | The release pull request and npm publishing                         |
-| Agency (`AndrewCraswell`)   | Public     | `setup` in its verify job                                                        | `ci-verify`, with `env` for its registry                            |
-| Spawn (`AndrewCraswell`)    | Private    | `ci-verify`, with `prepare` for FFmpeg; `setup` in its browser and template jobs | Previews, staging and production deploys                            |
-| Copacker (`betterapps-hq`)  | Private    | `ci-verify` on Blacksmith runners                                                | Turborepo's remote cache; Neon branches, promotion and Terraform    |
-| Verdun (`AndrewCraswell`)   | Private    | Not yet                                                                          | `ci-verify` with Git LFS                                            |
-| HOA (`AndrewCraswell`)      | Private    | Not yet                                                                          | `ci-verify` with Turborepo's remote cache; previews with migrations |
+| Repository                  | Visibility | On the templates                                                                    | Next                                                                     |
+| --------------------------- | ---------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Parity (`betterapps-hq`)    | Public     | `ci-verify` on three systems, with type and change checks; `terraform-plan`/`apply` | Releases with `release-prepare` and `cd-npm-publish`; Storybook previews |
+| Buildkit (`AndrewCraswell`) | Public     | `ci-verify`, behind a `verify` gate job; `setup` in its other test jobs             | The release pull request and npm publishing                              |
+| Agency (`AndrewCraswell`)   | Public     | `ci-verify`, with `env` for its registry; `setup` in its detection job              | Its deploys stay its own                                                 |
+| Spawn (`AndrewCraswell`)    | Private    | `ci-verify`; `setup` in its browser and template jobs                               | `preview-web`, `cd-web-deploy` and `cd-web-promote`                      |
+| Copacker (`betterapps-hq`)  | Private    | `ci-verify` with Turborepo's remote cache, on Blacksmith runners                    | `preview-web` with Neon branches, promotion, and the Terraform templates |
+| Verdun (`AndrewCraswell`)   | Private    | `ci-verify` with Git LFS; `setup` in its Railway deploy                             | Its deploy stays its own                                                 |
+| HOA (`AndrewCraswell`)      | Private    | `ci-verify`; `setup` in its preview and deploy jobs                                 | `preview-web` and `cd-web-deploy`, with D1 migrations                    |
 
 ## Terraform
 
