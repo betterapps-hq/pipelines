@@ -142,7 +142,8 @@ Outputs: `environments`, each environment's `worker` and `url`, by name; `previe
   is `module.web.cloudflare_worker.extra["<key>"]`. Set its `workers_dev` and `preview_urls` to what the Worker has
   today, so importing it changes nothing.
 - **Taking an environment or an extra Worker out deletes its Worker,** with every deployed version, and so does renaming
-  its key. To rename a key, add a `moved` block from the old address to the new one. To stop managing a Worker but keep
+  its key. To rename a key, add a `moved` block from the old address to the new one, and set `worker_name` to the
+  Worker's current name if it was made from the key, or the Worker is renamed too. To stop managing a Worker but keep
   it, take it out of the state first, with `terraform state rm 'module.web.cloudflare_worker.extra["<key>"]'` or the
   environment's address; a `removed` block can't name one key of a map. The plan shows any deletion before it's applied.
 
