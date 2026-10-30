@@ -635,7 +635,7 @@ there was nothing to publish, the registry had every version by then, in a dry r
 
 Secrets: none. Permissions: `contents: read` and `id-token: write`, which the calling job grants, a dry run's too.
 
-```yaml
+````yaml
 # .github/workflows/cd-npm.yml, each package's trusted publisher on npmjs.com
 name: CD npm
 on:
@@ -661,4 +661,335 @@ jobs:
     with:
       # Parity's desktop app is versioned but not published, so only packages with a publishConfig go.
       require-publish-config: true
+
+## Web apps
+
+`preview-web`, `preview-web-cleanup`, `cd-web-deploy` and `cd-web-promote` deliver a web app to Cloudflare Workers: a
+preview for each pull request, then staging, then production. Where each goes is its GitHub environment's settings,
+which the [`cloudflare-web`](../terraform/cloudflare-web) Terraform module writes, and each skips with a notice until
+they exist.
+
+- **They build with the caller's command and publish with Wrangler** 4.148.0, run in the app's directory, where it finds
+  the Worker's config. Vite's Cloudflare plugin points it at the build's own config there.
+- **Or with the caller's deploy command,** for an app Wrangler doesn't deploy, such as one on the `cf` CLI or with a
+  Worker for each preview. It gets the same settings, and reports its URL by appending `url=<url>` to `$GITHUB_OUTPUT`.
+- **Migrations run before the new code goes out,** so they have to work with the code that's running.
+- **The commands run in bash** in the working directory. The migrate, seed and deploy commands get
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, and every command gets each entry of `WEB_COMMAND_ENV` and
+  `WEB_COMMAND_SECRETS` as an environment variable.
+
+| Setting                    | Kind     | Where                        | What it is                                                                                  |
+| -------------------------- | -------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID`    | Variable | Every environment            | The Cloudflare account the Workers are in                                                   |
+| `WEB_CLOUDFLARE_API_TOKEN` | Secret   | Every environment            | A token that can deploy the Workers and run the migrations                                  |
+| `WEB_WORKER`               | Variable | Every environment            | The environment's Worker; for previews, the Worker they're previews of                      |
+| `WEB_URL`                  | Variable | Deploys                      | The environment's public URL                                                                |
+| `WEB_COMMAND_ENV`          | Variable | Any, optional                | A JSON object of more environment variables for the commands, such as a build's settings    |
+| `WEB_COMMAND_SECRETS`      | Secret   | Any, optional                | The same for secrets, such as a migration's database URL, each masked in logs               |
+| `WEB_WORKER_SECRETS`       | Secret   | Any, optional                | A JSON object of the Worker's secrets, uploaded with each deploy and preview                |
+| `NEON_PROJECT_ID`          | Variable | Previews with Neon           | The Neon project previews' branches are made in                                             |
+| `NEON_PARENT_BRANCH_ID`    | Variable | Previews with Neon, optional | The branch they're copied from, such as staging's; without it, the project's default branch |
+| `NEON_DATABASE_NAME`       | Variable | Previews with Neon           | The database their URLs name                                                                |
+| `NEON_ROLE_NAME`           | Variable | Previews with Neon           | The role their URLs sign in as                                                              |
+| `NEON_API_KEY`             | Secret   | Previews with Neon           | A Neon API key that can make and delete the project's branches                              |
+
+`WEB_WORKER_SECRETS` adds to the Worker's secrets: one it doesn't name is kept. Secrets every Worker preview shares can
+stay in the Worker's preview base config instead, set with `wrangler preview base-config secret put`.
+
+## preview-web
+
+A reusable workflow for pull requests. It builds the app, then publishes a Worker preview of `WEB_WORKER` named
+`pr-<number>`, at `https://pr-<number>-<worker>.<subdomain>.workers.dev`, and comments its URL, editing the same comment
+on later pushes.
+
+- **With `neon`, the preview gets a database of its own:** a Neon branch named for the preview, copied from
+  `NEON_PARENT_BRANCH_ID` the first time and reused on later pushes, so its data stays. The migrate and seed commands
+  run with its direct URL in `DATABASE_URL`, and the preview gets its pooled URL as the Worker secret `database-secret`
+  names.
+- **Neon deletes the branch itself** 7 days after the last push, should cleanup never run. Only a branch with exactly
+  the preview's name, made from `NEON_PARENT_BRANCH_ID`, that isn't the project's default or protected, is ever reused
+  or deleted.
+- **The Worker's config needs a `previews` block,** which says the preview's bindings and vars; Wrangler refuses without
+  one. Its `preview_urls` has to be on for the preview to have a URL.
+- **A pull request that closed or moved on is skipped,** checked once the build is done, so a rerun of an old run can't
+  bring back a deleted preview or replace a newer one.
+- **A deploy command** runs instead of Wrangler, with `PREVIEW_NAME`, `WEB_WORKER`, `DATABASE_URL` with Neon, and
+  `WORKER_SECRETS_FILE`, the path of a JSON file of the Worker's secrets when there are any.
+
+| Input               | Default        | What it's for                                                                         |
+| ------------------- | -------------- | ------------------------------------------------------------------------------------- |
+| `environment`       | `preview`      | The GitHub environment whose settings say where previews go.                          |
+| `preview-name`      | `pr-<number>`  | The preview's name: lowercase letters, digits and hyphens.                            |
+| `working-directory` | `.`            | The workspace's root, relative to the repository's. The commands run here.            |
+| `app-directory`     | `.`            | Where Wrangler runs and finds the Worker's config, relative to the working directory. |
+| `build-command`     | `pnpm build`   | What builds the app. Empty skips the build.                                           |
+| `neon`              | `false`        | Make or reuse a Neon branch for the preview.                                          |
+| `migrate-command`   | (empty)        | What migrates the preview's database.                                                 |
+| `seed-command`      | (empty)        | What seeds it, after the migrations.                                                  |
+| `database-secret`   | `DATABASE_URL` | The Worker secret the preview gets the Neon branch's pooled URL as; empty for none.   |
+| `deploy-command`    | (empty)        | What publishes the preview instead of Wrangler.                                       |
+| `comment`           | `true`         | On a pull request, comment the URL.                                                   |
+| `toolchain`         | `auto`         | As the setup action takes it.                                                         |
+
+Outputs: `url`, the preview's, and `neon-branch-id`, its Neon branch's. Both are empty when it skipped.
+
+Secrets: none passed; it reads the environment's own. Permissions: `contents: read`, and `pull-requests: write` to
+comment, which the calling job has to grant.
+
+Publishes of one preview queue rather than cancel each other, so a database is never left half migrated.
+
+```yaml
+# .github/workflows/preview.yml
+on:
+  pull_request:
+
+# Shared with preview-cleanup.yml, so closing a pull request cancels a preview still publishing.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+
+jobs:
+  web:
+    # Forks can't use the environment's secrets, and Dependabot's pull requests don't need a preview.
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: betterapps-hq/pipelines/.github/workflows/preview-web.yml@<commit sha> # v1.4.0
+    with:
+      build-command: pnpm --filter web build
+      app-directory: apps/web
+      neon: true
+      migrate-command: pnpm --filter web db:migrate
+      seed-command: pnpm --filter web db:seed
+````
+
+## preview-web-cleanup
+
+A reusable workflow that deletes what `preview-web` published, such as a closed pull request's: the Worker preview, or
+what the caller's delete command removes, and with `neon` the preview's Neon branch. It marks the comment removed.
+
+- **It skips with a notice** when the environment has no settings, and keeps a preview whose pull request is open again.
+- **A preview that isn't there counts as deleted.** While the Worker is being deployed, as merging often starts,
+  Cloudflare can report it missing, so that's retried.
+- **The Neon branch is deleted even when deleting the preview fails,** and the comment is marked removed only once both
+  are gone.
+- **A delete command** runs instead of Wrangler, in the default branch's checkout rather than the pull request's, with
+  `PREVIEW_NAME` and `WEB_WORKER`.
+
+| Input               | Default       | What it's for                                                                |
+| ------------------- | ------------- | ---------------------------------------------------------------------------- |
+| `environment`       | `preview`     | The GitHub environment the preview was published with.                       |
+| `preview-name`      | `pr-<number>` | The preview's name.                                                          |
+| `working-directory` | `.`           | The workspace `preview-web` was given, which its comment's marker names.     |
+| `app-directory`     | `.`           | The app directory `preview-web` was given, which the marker names too.       |
+| `neon`              | `false`       | Delete the preview's Neon branch.                                            |
+| `delete-command`    | (empty)       | What deletes the preview instead of Wrangler, for one a deploy command made. |
+| `comment`           | `true`        | On a pull request, mark the comment removed.                                 |
+| `toolchain`         | `auto`        | As the setup action takes it, for the delete command.                        |
+
+Permissions: `contents: read`, and `pull-requests: write` for the comment.
+
+```yaml
+# .github/workflows/preview-cleanup.yml
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: betterapps-hq/pipelines/.github/workflows/preview-web-cleanup.yml@<commit sha> # v1.4.0
+    with:
+      app-directory: apps/web
+      neon: true
+```
+
+## cd-web-deploy
+
+A reusable workflow that deploys a web app to the GitHub environment the caller names, such as staging. It builds the
+app, has Wrangler check the Worker with `wrangler deploy --dry-run`, runs the caller's migrations and seed, then deploys
+with `wrangler deploy` and `WEB_WORKER_SECRETS`, or with the caller's deploy command.
+
+- **The dry run comes before the migrations,** so a Worker that can't deploy never changes the database.
+- **A push its branch has moved past is skipped,** so a rerun of an older run, or one that waited behind a newer, can't
+  put older code back. Give `ref` to deploy a commit of your choosing, though GitHub records the run's commit, so
+  `cd-web-promote` can't promote from that deploy.
+- **Deploys to one environment run one at a time,** promotions included, and are never cancelled midway.
+- **A deploy command** runs instead of Wrangler, with `WEB_WORKER` and `WORKER_SECRETS_FILE`.
+
+| Input               | Default      | What it's for                                                                         |
+| ------------------- | ------------ | ------------------------------------------------------------------------------------- |
+| `environment`       | (required)   | The GitHub environment to deploy to, such as `staging`.                               |
+| `ref`               | (empty)      | The commit to deploy; empty is the one that started the run.                          |
+| `working-directory` | `.`          | The workspace's root, relative to the repository's. The commands run here.            |
+| `app-directory`     | `.`          | Where Wrangler runs and finds the Worker's config, relative to the working directory. |
+| `build-command`     | `pnpm build` | What builds the app for the environment. Empty skips the build.                       |
+| `migrate-command`   | (empty)      | What migrates the environment's database.                                             |
+| `seed-command`      | (empty)      | What seeds it, after the migrations.                                                  |
+| `deploy-command`    | (empty)      | What deploys instead of Wrangler.                                                     |
+| `toolchain`         | `auto`       | As the setup action takes it.                                                         |
+
+Outputs: `url`, `WEB_URL` or else what the deploy reported; `commit`, the commit deployed; and `version-id`, the Worker
+version Wrangler deployed. Each is empty when it skipped.
+
+Secrets: none passed; it reads the environment's own. Permissions: `contents: read`.
+
+## cd-web-promote
+
+A reusable workflow that deploys the commit one environment has, staging by default, to the next, production by default.
+It deploys as `cd-web-deploy` does, once the production environment's protection rules let it.
+
+- **What staging has** is the last commit `cd-web-deploy` deployed there. GitHub records a deployment of the run's
+  commit for each job in an environment, and `cd-web-deploy` gives one a URL only once that commit has deployed, so
+  neither a skip nor a deploy of another `ref` counts.
+- **Only `cd-web-deploy` should deploy to staging.** Any successful deployment there with a URL counts, whichever
+  workflow made it, so another that deploys to staging has to set its environment URL only once it has deployed the
+  run's commit, as `cd-web-deploy` does.
+- **A `commit` of your choosing** has to have deployed to staging, or nothing is promoted.
+- **With nothing deployed to staging yet,** it skips with a notice.
+- **The deploy job's name says the commit,** so whoever approves a production deploy sees what they're approving.
+- **Its URL is in the job's summary.** GitHub shows it on the environment too when the commit is the run's, as it is
+  when staging has the head of `main`.
+
+Staging and production are separate Workers, with their own bindings, settings and databases, so promoting builds the
+same commit again for production, from the same lockfile, rather than moving a build or a Worker version:
+
+- **A Worker version belongs to one Worker.** `wrangler versions upload` and `wrangler versions deploy` split a deploy
+  into uploading a version and sending traffic to it, but only within the Worker it was uploaded to, so a version tested
+  on staging's Worker can't be deployed to production's.
+- **A build is made for one environment.** Vite's Cloudflare plugin writes the chosen environment's Worker config into
+  the build, and builds read their environment's settings, as `vite build --mode production` does.
+- **And `wrangler versions deploy` leaves things out:** cron triggers, routes and custom domains wait for
+  `wrangler triggers deploy`, and Durable Object migrations need `wrangler deploy`. So the templates deploy with
+  `wrangler deploy`, after a dry run that catches a Worker that won't bundle, or whose config is wrong, before the
+  migrations run.
+
+Its inputs are `cd-web-deploy`'s, without `ref` and with these:
+
+| Input              | Default      | What it's for                                                                                 |
+| ------------------ | ------------ | --------------------------------------------------------------------------------------------- |
+| `environment`      | `production` | The GitHub environment to promote to.                                                         |
+| `from-environment` | `staging`    | The GitHub environment whose deployed commit is promoted.                                     |
+| `commit`           | (empty)      | A full SHA to promote, which has to have deployed to `from-environment`; empty is its latest. |
+
+Outputs: `commit`, `url` and `version-id`, each empty when it skipped.
+
+Permissions: `contents: read`, and `deployments: read` to find what staging has, which the calling job has to grant.
+
+Production waits for its environment's required reviewers where the plan has them: public repositories, and private ones
+on GitHub Pro, Team or Enterprise. A private repository on GitHub Free can't require reviewers, so there production runs
+by hand, from `workflow_dispatch`:
+
+```yaml
+# .github/workflows/cd-web.yml
+name: Deliver
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit to promote to production; empty is what staging has.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    if: github.event_name == 'push'
+    uses: betterapps-hq/pipelines/.github/workflows/cd-web-deploy.yml@<commit sha> # v1.4.0
+    with:
+      environment: staging
+      build-command: CLOUDFLARE_ENV=staging pnpm --filter web build
+      app-directory: apps/web
+      migrate-command: pnpm --filter web db:migrate
+
+  # Where production can require a reviewer, this can follow staging instead, with needs: staging.
+  production:
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      deployments: read
+    uses: betterapps-hq/pipelines/.github/workflows/cd-web-promote.yml@<commit sha> # v1.4.0
+    with:
+      commit: ${{ inputs.commit }}
+      build-command: pnpm --filter web build
+      app-directory: apps/web
+      migrate-command: pnpm --filter web db:migrate
+```
+
+## neon-branch
+
+A composite action that makes a Neon database branch by name, such as a pull request's, or reuses the one already there,
+and gives its connection URLs; or deletes it. `preview-web` and `preview-web-cleanup` do the same steps, and move to
+this action once a release has it.
+
+- **It only reuses or deletes a branch with exactly the name,** made from `parent-branch-id` when that's given, that
+  isn't the project's default or protected. It refuses any other, and the step fails.
+- **A new branch is ready to connect to** when the step ends, with a read-write compute.
+- **The URLs are masked,** and so is the role's password in them.
+
+| Input              | Default    | What it's for                                                                                                            |
+| ------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `api-key`          | (required) | A Neon API key that can manage the project's branches.                                                                   |
+| `project-id`       | (required) | The Neon project.                                                                                                        |
+| `branch`           | (required) | The branch's name, such as `pr-123`.                                                                                     |
+| `parent-branch-id` | (empty)    | The branch to copy, by ID; empty is the project's default.                                                               |
+| `database`         | (empty)    | The database the URLs name. Required unless deleting.                                                                    |
+| `role`             | (empty)    | The role the URLs sign in as. Required unless deleting.                                                                  |
+| `expires-in-days`  | `7`        | Days until Neon deletes the branch itself, counted again on reuse. `0`: none for a new branch, a reused one's unchanged. |
+| `delete`           | `false`    | Delete the branch instead. One that isn't there counts as deleted.                                                       |
+
+Outputs: `branch-id`; `created`, `true` when this call made it; `database-url`, a direct URL for migrations; and
+`pooled-database-url`, through Neon's pooler, for the app.
+
+Secrets: `api-key` is one, passed from the caller's secrets. Permissions: none; it calls only Neon's API.
+
+```yaml
+- id: database
+  uses: betterapps-hq/pipelines/github/actions/neon-branch@<commit sha> # v1.4.0
+  with:
+    api-key: ${{ secrets.NEON_API_KEY }}
+    project-id: ${{ vars.NEON_PROJECT_ID }}
+    branch: pr-${{ github.event.pull_request.number }}
+    parent-branch-id: ${{ vars.NEON_PARENT_BRANCH_ID }}
+    database: ${{ vars.NEON_DATABASE_NAME }}
+    role: ${{ vars.NEON_ROLE_NAME }}
+- run: pnpm db:migrate
+  env:
+    DATABASE_URL: ${{ steps.database.outputs.database-url }}
+```
+
+## pr-comment
+
+A composite action that writes a pull request comment starting with a marker, editing the one already there rather than
+adding another. The preview templates do the same steps, and move to this action once a release has it.
+
+| Input    | Default                | What it's for                                                                |
+| -------- | ---------------------- | ---------------------------------------------------------------------------- |
+| `marker` | (required)             | An HTML comment that starts the comment and finds it again.                  |
+| `body`   | (required)             | The comment's text, after the marker.                                        |
+| `number` | The run's pull request | The pull request to comment on.                                              |
+| `create` | `true`                 | Make the comment when there isn't one; `false` only edits one already there. |
+| `author` | `github-actions[bot]`  | Whose comment to edit: the login the token comments as.                      |
+| `token`  | `github.token`         | A token that can write the pull request's comments.                          |
+
+Output: `comment-id`, empty when there was none and `create` was false.
+
+Permissions: `pull-requests: write`.
+
+```yaml
+- uses: betterapps-hq/pipelines/github/actions/pr-comment@<commit sha> # v1.4.0
+  with:
+    marker: "<!-- coverage -->"
+    body: "**Coverage:** ${{ steps.coverage.outputs.percent }}%"
 ```

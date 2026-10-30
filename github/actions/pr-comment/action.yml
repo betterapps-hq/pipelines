@@ -1,0 +1,67 @@
+name: Pull request comment
+description: >-
+  Writes a pull request comment that starts with a marker, editing the one already there rather than adding another, so
+  a preview's links stay in one place however many times it's published.
+
+inputs:
+  marker:
+    description: An HTML comment that starts the comment and finds it again, such as <!-- preview-web preview -->.
+    required: true
+  body:
+    description: The comment's text, which goes after the marker.
+    required: true
+  number:
+    description: The pull request's number. Empty is the one the run is for.
+    default: ""
+  create:
+    description: >-
+      Make the comment when there isn't one. false only edits one already there, as marking a preview removed does.
+    default: "true"
+  author:
+    description: Whose comment to edit, the login the token comments as.
+    default: github-actions[bot]
+  token:
+    description: A token that can write the pull request's comments.
+    default: ${{ github.token }}
+
+outputs:
+  comment-id:
+    description: The comment's ID; empty when there was none and create was false.
+    value: ${{ steps.comment.outputs.comment-id }}
+
+runs:
+  using: composite
+  steps:
+    - id: comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        MARKER: ${{ inputs.marker }}
+        TEXT: ${{ inputs.body }}
+        NUMBER: ${{ inputs.number || github.event.pull_request.number }}
+        CREATE: ${{ inputs.create }}
+        AUTHOR: ${{ inputs.author }}
+      run: |
+        if ! [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::No pull request to comment on: give number, or run on a pull request."
+          exit 1
+        fi
+        case "$MARKER" in
+          "<!--"*"-->") ;;
+          *)
+            echo "::error::marker is an HTML comment, such as <!-- preview-web preview -->."
+            exit 1
+            ;;
+        esac
+        # sed reads every page, where head would close the pipe on gh and fail the step under pipefail.
+        # shellcheck disable=SC2016 # $ENV is jq's, not the shell's.
+        id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" \
+          --jq '.[] | select(.user.login == $ENV.AUTHOR and (.body | startswith($ENV.MARKER))) | .id' | sed -n 1p)
+        comment="$MARKER
+        $TEXT"
+        if [ -n "$id" ]; then
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$comment" > /dev/null
+        elif [ "$CREATE" = true ]; then
+          id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments" -f body="$comment" --jq .id)
+        fi
+        echo "comment-id=$id" >> "$GITHUB_OUTPUT"
