@@ -25,10 +25,13 @@ fix lands in one place instead of being copied between repositories.
 | `.github/workflows/ci-verify.yml`           | Reusable workflow | Runs the workspace's `pnpm verify` on each operating system the caller lists                               |
 | `.github/workflows/publish-storybook.yml`   | Reusable workflow | Publishes a Storybook to the environment the caller names: a pull request's preview, staging or production |
 | `.github/workflows/unpublish-storybook.yml` | Reusable workflow | Deletes a pull request's Storybook preview                                                                 |
+| `.github/workflows/terraform-plan.yml`      | Reusable workflow | Plans a pull request's Terraform project against its state in R2, and comments a summary of the plan       |
+| `.github/workflows/terraform-apply.yml`     | Reusable workflow | Applies a Terraform project in a GitHub environment, such as from `main` after a merge                     |
 | `.github/workflows/release-prepare.yml`     | Reusable workflow | Opens or updates Beachball's release pull request from the change files on `main`                          |
 | `.github/workflows/release-merge.yml`       | Reusable workflow | Merges the release pull request through auto-merge once `main`'s rules are met                             |
 | `.github/workflows/cd-npm-publish.yml`      | Reusable workflow | Publishes the packages whose versions npm doesn't have, through trusted publishing with provenance         |
 | `terraform/cloudflare-storybook`            | Terraform module  | Makes the Workers Storybooks publish to, and the environment settings `publish-storybook` reads            |
+| `terraform/github-repository-rules`         | Terraform module  | Writes a repository's rulesets: pull requests into the default branch, and release tags that never move    |
 
 Planned, in the order repositories need them: previews (`preview-npm`, `preview-desktop`, `preview-web` and their
 cleanup), and the rest of delivery (`cd-desktop-build`, `cd-desktop-release`, `cd-desktop-promote`, `cd-web-deploy`,
@@ -40,11 +43,15 @@ Cloud services the templates need come from Terraform, never by hand or from a p
 
 - **Modules live in `terraform/`,** one for each kind of service a template deploys to. A repository uses them from a
   Terraform project in its own `infra/`, with its state in R2.
+- **`terraform-plan` and `terraform-apply` run those projects:** a pull request that changes one gets its plan as a
+  comment, and `main` applies it in a GitHub environment that holds the credentials.
 - **A module also writes the GitHub variables and secrets its template reads,** so a template only deploys, and skips
   with a notice until they exist.
-- **The first is `cloudflare-storybook`,** for `publish-storybook`: a static-assets Worker for each environment a
-  repository publishes Storybook to, with a custom domain where one is given, a token that can deploy them, and each
-  GitHub environment's settings. Its README says what it makes and how a repository's `infra/` uses it.
+- **`cloudflare-storybook` is for `publish-storybook`:** a static-assets Worker for each environment a repository
+  publishes Storybook to, with a custom domain where one is given, a token that can deploy them, and each GitHub
+  environment's settings. Its README says what it makes and how a repository's `infra/` uses it.
+- **`github-repository-rules` writes a repository's rulesets,** the ones this repository has: the default branch takes
+  squashed pull requests with their checks passing and conversations resolved, and release tags never move.
 
 ## Rules
 
@@ -63,10 +70,10 @@ Cloud services the templates need come from Terraform, never by hand or from a p
 [`test.yml`](.github/workflows/test.yml) lints every workflow with actionlint, runs the setup action from the commit
 under test against the pnpm and Vite+ examples on Ubuntu, Windows and macOS, and calls each reusable workflow against
 them. A reusable workflow uses this repository's actions at the release it names, so a change to an action is tested
-directly, and reaches the workflows when it's released. It also validates the Terraform modules, and checks the
-Storybook templates skip cleanly where nothing is set up to publish to. The release templates run as dry runs against
-the release example, which need no token: the bump's title and versions, and which packages each publishing rule picks,
-in order.
+directly, and reaches the workflows when it's released. It also validates every Terraform module's example, and checks
+the Storybook and Terraform templates skip cleanly where nothing is set up for them. The release templates run as dry
+runs against the release example, which need no token: the bump's title and versions, and which packages each publishing
+rule picks, in order.
 
 The repository is on Vite+, as its callers are: `pnpm format` formats the workflows, actions, modules and docs with
 `vp fmt`, and `pnpm verify` checks them, which CI runs through ci-verify. Each example workspace keeps its own settings.
