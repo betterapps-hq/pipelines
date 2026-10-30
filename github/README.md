@@ -384,8 +384,8 @@ only takes a trusted publisher for a package that exists, so a package's first v
 | `dry-run`                | `false` | Find, build and pack the packages without publishing.                              |
 
 Outputs: `packages`, those to publish, or that a dry run would, as a JSON array of `name`, `version` and `path` in the
-order they're published; and `published`, `true` once they're published, and `false` when there was nothing to publish,
-in a dry run, or when the run skipped.
+order they're published; and `published`, `true` when pnpm's summary says it published at least one, and `false` when
+there was nothing to publish, the registry had every version by then, in a dry run, or when the run skipped.
 
 Secrets: none. Permissions: `contents: read` and `id-token: write`, which the calling job grants, a dry run's too.
 

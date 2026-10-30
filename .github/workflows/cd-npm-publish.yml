@@ -45,8 +45,8 @@ on:
         value: ${{ jobs.select.outputs.packages }}
       published:
         description: >-
-          true when those packages were published; false when there was nothing to publish, in a dry run, or when the
-          run skipped.
+          true when pnpm published at least one package; false when there was nothing to publish, the registry had every
+          version by then, in a dry run, or when the run skipped.
         value: ${{ jobs.publish.outputs.published || 'false' }}
 
 permissions:
@@ -208,9 +208,9 @@ jobs:
       contents: read
       # npm's trusted publishing exchanges the run's OIDC token for a short-lived one, and provenance is signed with it.
       id-token: write
-    # Publishes queue rather than cancel, so one is never cut off between two packages.
     outputs:
-      published: ${{ steps.publish.outcome == 'success' }}
+      published: ${{ steps.publish.outputs.published || 'false' }}
+    # Publishes queue rather than cancel, so one is never cut off between two packages.
     concurrency:
       group: cd-npm-publish-${{ inputs.working-directory }}
       cancel-in-progress: false
@@ -248,8 +248,8 @@ jobs:
           else
             echo "::notice::Skipped: $DEFAULT_BRANCH has moved on from ${GITHUB_SHA::7} to ${head::7}, whose own run publishes it."
           fi
-      # pnpm publishes in dependency order, and skips a version npm got since the select job looked. Provenance needs
-      # public packages.
+      # pnpm publishes in dependency order, and skips a version npm got since the select job looked, so what it published
+      # comes from its summary. Provenance needs public packages.
       - if: steps.current.outputs.current == 'true'
         id: publish
         name: Publish with provenance
@@ -257,5 +257,13 @@ jobs:
           PACKAGES: ${{ needs.select.outputs.packages }}
         run: |
           mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)"' <<< "$PACKAGES")
-          pnpm "${filters[@]}" --recursive publish --provenance --access public --no-git-checks
-          jq -r '"Published:", (.[] | "- \(.name)@\(.version)")' <<< "$PACKAGES" >> "$GITHUB_STEP_SUMMARY"
+          rm -f pnpm-publish-summary.json
+          pnpm "${filters[@]}" --recursive publish --provenance --access public --no-git-checks --report-summary
+          published=$(jq -r '.publishedPackages | map("- \(.name)@\(.version)") | join("\n")' pnpm-publish-summary.json)
+          if [ -n "$published" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            printf 'Published:\n\n%s\n' "$published" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing published: the registry already had every version." >> "$GITHUB_STEP_SUMMARY"
+          fi
