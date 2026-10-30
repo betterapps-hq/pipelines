@@ -228,8 +228,9 @@ Permissions: `contents: read`.
   don't use Vite+'s task cache. On Windows, tasks need two inputs left out to replay, as
   [the action's section](#on-windows) shows. ci-verify keeps it with [the action](#vite-task-cache), so two calls in one
   workflow that run different tasks on one system, such as a verify on every system and a type check on one, give each a
-  `vite-task-cache-key` of its own; otherwise the newer one's cache is restored for both. The first run after the key
-  changes from v1.5.0's has nothing to restore.
+  `vite-task-cache-key` of its own; otherwise the newer one's cache is restored for both. They also need a
+  `concurrency-key` each, or one cancels the other. The first run after the key changes from v1.5.0's has nothing to
+  restore.
 - **`concurrency-key`** changes what a newer run cancels. `${{ github.event.pull_request.number || github.run_id }}`
   keeps cancelling superseded pull request runs while runs on `main` never wait on each other.
 - **Its checks are named `<calling job> / Verify (<runner>)`.** Where a branch rule or other automation requires a check
