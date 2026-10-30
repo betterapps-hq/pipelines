@@ -452,3 +452,212 @@ Secrets: none passed; it reads the environment's own.
 Output: `result`, which is `applied`, `no-changes`, or `skipped` when the environment had no state credentials.
 
 Permissions: `contents: read`.
+
+## Releases with Beachball
+
+Three reusable workflows release a workspace whose versions come from Beachball change files, as Buildkit's and Parity's
+do. After CI passes on `main`, `release-prepare` opens a pull request with the versions and changelogs the change files
+make, and `release-merge` merges it once `main`'s rules are met. Its version changes then start delivery:
+`cd-npm-publish` publishes to npm the versions npm doesn't have yet.
+
+**What a repository sets up first:**
+
+- **A GitHub App, or a personal access token, that pushes the release branch and merges it.** A push or merge made with
+  a job's own token doesn't start workflows, so the pull request's checks wouldn't run, nor would `main`'s after it
+  merges. The App needs read and write access to contents and pull requests, and is installed on the repository; its
+  client ID goes in a `RELEASE_APP_CLIENT_ID` variable and its private key in a `RELEASE_APP_PRIVATE_KEY` secret.
+  Without an App, a fine-grained personal access token with the same access goes in a `RELEASE_TOKEN` secret. Until one
+  exists, both templates skip with a notice.
+- **Rules on `main` that say when a release is ready,** since auto-merge waits only for what they require: CI's checks,
+  CodeRabbit's status where its review should finish first, and review threads resolved.
+  [`github-repository-rules`](../terraform/github-repository-rules) writes rules like these. The repository must also
+  allow auto-merge, in its settings, which that module doesn't write.
+- **Change-file checks that skip the release branch.** The release pull request deletes change files rather than adding
+  them, so `beachball check` would ask it for new ones:
+
+  ```yaml
+  - name: Check change files
+    # The release pull request deletes the change files it releases.
+    if: github.head_ref != 'beachball/release' || github.event.pull_request.head.repo.full_name != github.repository
+    run: pnpm beachball check
+  ```
+
+- **CodeRabbit told to skip changelogs.** It reviews release pull requests like any other, and a thread it opens keeps
+  one from merging until it's resolved. In `.coderabbit.yaml`:
+
+  ```yaml
+  reviews:
+    path_filters:
+      - "!**/CHANGELOG.md"
+      - "!**/CHANGELOG.json"
+  ```
+
+A repository's `release.yml` calls the first two:
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    # CI's runs for pushes to main only, never a pull request's branch that happens to be called main.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    uses: betterapps-hq/pipelines/.github/workflows/release-prepare.yml@<commit sha> # <version>
+    with:
+      app-client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+    # Secrets go by name, so a repository with a token instead passes RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }} and
+    # no app-client-id, here and below.
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+  merge:
+    needs: prepare
+    if: needs.prepare.outputs.pull-request != ''
+    uses: betterapps-hq/pipelines/.github/workflows/release-merge.yml@<commit sha> # <version>
+    with:
+      pull-request: ${{ fromJSON(needs.prepare.outputs.pull-request) }}
+      head-sha: ${{ needs.prepare.outputs.head-sha }}
+      app-client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+    secrets:
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+```
+
+## release-prepare
+
+A reusable workflow. It opens Beachball's release pull request from the change files on the base branch, or updates the
+open one: a single commit on `beachball/release` with the versions and changelogs `beachball bump` writes, and the
+change files deleted. Each run replaces that commit, so the pull request releases what the base branch has now.
+
+- **It releases the commit CI passed on,** and only while that's still the base branch's head. A newer commit's run
+  releases that one.
+- **Its title is conventional,** since a squash merge makes it the commit's subject: the `title-prefix` and the packages
+  whose version changed, such as `chore(release): @scope/cli@1.2.0, @scope/core@1.1.0`, ending "and 2 more" where that
+  fits 72 characters. The body lists each package's old and new versions and each change file's comment.
+- **The commit is the App's bot's,** or the token's user's. A run whose files match the branch's doesn't push, so the
+  checks and reviews already on the pull request stand.
+- **With no change files left,** it closes an open release pull request.
+- **A dry run** bumps and reports the title and packages in its outputs and summary, and needs no token.
+
+| Input               | Default                                                             | What it's for                                                                   |
+| ------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `working-directory` | `.`                                                                 | The workspace's root, relative to the repository's.                             |
+| `base`              | `main`                                                              | The branch the release merges into, whose change files it releases.             |
+| `branch`            | `beachball/release`                                                 | The release pull request's branch, which each run replaces.                     |
+| `title-prefix`      | `chore(release):`                                                   | The start of the title and commit subject, before the packages.                 |
+| `bump-command`      | `pnpm exec beachball bump`                                          | What writes the versions and changelogs, in the working directory.              |
+| `after-bump`        | `pnpm install --no-frozen-lockfile && pnpm run --if-present format` | Commands run before the commit, such as updating the lockfile and formatting.   |
+| `toolchain`         | `auto`                                                              | As the setup action takes it.                                                   |
+| `app-client-id`     | (empty)                                                             | The GitHub App's client ID, with `RELEASE_APP_PRIVATE_KEY`; empty uses a token. |
+| `dry-run`           | `false`                                                             | Bump and report without pushing or opening anything.                            |
+
+Secrets: `RELEASE_APP_PRIVATE_KEY` with `app-client-id`, or `RELEASE_TOKEN`, as above. Neither is needed for a dry run.
+
+Outputs: `pull-request`, its number, empty when there's nothing to release; `head-sha`, its head commit; `title`; and
+`packages`, the packages whose version changed, as a JSON array of `name`, `from` and `to`.
+
+Permissions: `contents: read`. What it writes goes through the App's token or `RELEASE_TOKEN`.
+
+The install in `after-bump` lets a workspace with pnpm's `verifyDepsBeforeRun` run scripts after the versions change.
+Commit hooks the install sets up run on the release commit, so they have to accept it.
+
+## release-merge
+
+A reusable workflow. It turns on auto-merge for the release pull request `release-prepare` opened, with the same App or
+token, so the merge starts `main`'s workflows, which a merge by the job's own token wouldn't. GitHub then merges it once
+`main`'s rules are met, or at once when they already are.
+
+- **It merges only the commit `release-prepare` pushed.** A pull request that has moved on is left to the run that moved
+  it, and one from a fork fails.
+- **Without a required status check on `main`, it leaves the pull request to merge by hand,** with a warning, as it
+  would merge before CI ran. It also warns when `main`'s rules don't require review threads to be resolved, and leaves
+  the pull request with a warning when the repository doesn't allow auto-merge.
+
+| Input           | Default    | What it's for                                                                      |
+| --------------- | ---------- | ---------------------------------------------------------------------------------- |
+| `pull-request`  | (required) | The release pull request's number, `release-prepare`'s output.                     |
+| `head-sha`      | (required) | The commit to merge, `release-prepare`'s output.                                   |
+| `merge-method`  | `squash`   | `squash`, `merge` or `rebase`, one `main` allows. A squash's subject is the title. |
+| `app-client-id` | (empty)    | The GitHub App's client ID, with `RELEASE_APP_PRIVATE_KEY`; empty uses a token.    |
+
+Secrets: `RELEASE_APP_PRIVATE_KEY` with `app-client-id`, or `RELEASE_TOKEN`. Permissions: `contents: read`.
+
+## cd-npm-publish
+
+A reusable workflow. It publishes the workspace's packages whose versions npm doesn't have yet, in dependency order,
+through npm's trusted publishing: no token, and with provenance.
+
+- **What's published:** packages that aren't `private` and whose package.json doesn't set Beachball's
+  `shouldPublish: false`. With `require-publish-config`, only those with a `publishConfig` too, for a workspace where a
+  package that isn't private still isn't for npm, as Parity's desktop app isn't.
+- **Only versions the registry doesn't have,** asked of npm or the package's `publishConfig.registry`. A run that failed
+  or never ran is caught up by the next, and a run with nothing new asks for no approval.
+- **Publicly,** as provenance needs, so the registry is asked without credentials, and a package whose
+  `publishConfig.access` is `restricted` is left out.
+- **Dependencies first:** a package is published after the workspace packages it depends on, of any kind.
+- **Built first:** `build-command` builds the workspace, or by default each package being published and the workspace
+  packages it depends on run their `build` scripts, where they have one.
+- **From the default branch only,** and only the commit CI passed on while it's still the head, checked again just
+  before publishing, after any wait for an approval. Provenance names the commit the run started from, and a newer
+  commit's run publishes that one.
+- **A dry run** finds the packages, builds them and runs `pnpm publish --dry-run`, without the environment.
+
+**What npm needs:**
+
+- **The repository's own `cd-npm.yml` as each package's trusted publisher** on npmjs.com, with the `npm` environment.
+  npm checks the name of the workflow file that started the run, not one it calls, so that file calls this one.
+- **Allow npm publish turned on in that trusted publisher.** This publishes directly, and trusted publishers made after
+  3 September 2026 allow only `npm stage publish` unless it's turned on.
+- **A first version published by hand,** since npm only takes a trusted publisher for a package that exists.
+- **A public repository, and a `repository.url` in each package.json that matches it exactly.** npm makes provenance
+  only from a public repository, and checks the URL against the one the run came from.
+- **The `npm` environment protected,** so only `main` deploys to it, with an approval if releases should wait for one.
+
+| Input                    | Default | What it's for                                                                      |
+| ------------------------ | ------- | ---------------------------------------------------------------------------------- |
+| `working-directory`      | `.`     | The workspace's root, relative to the repository's.                                |
+| `require-publish-config` | `false` | Publish only packages with a `publishConfig`.                                      |
+| `build-command`          | (empty) | What builds the packages, in the working directory; empty runs their `build`s.     |
+| `environment`            | `npm`   | The GitHub environment publishing runs in, which npm's trusted publisher can name. |
+| `toolchain`              | `auto`  | As the setup action takes it.                                                      |
+| `dry-run`                | `false` | Find, build and pack the packages without publishing.                              |
+
+Outputs: `packages`, those to publish, or that a dry run would, as a JSON array of `name`, `version` and `path` in the
+order they're published; and `published`, `true` when pnpm's summary says it published at least one, and `false` when
+there was nothing to publish, the registry had every version by then, in a dry run, or when the run skipped.
+
+Secrets: none. Permissions: `contents: read` and `id-token: write`, which the calling job grants, a dry run's too.
+
+```yaml
+# .github/workflows/cd-npm.yml, each package's trusted publisher on npmjs.com
+name: CD npm
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # Retries a publish by hand.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: >-
+      github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push')
+    permissions:
+      contents: read
+      id-token: write
+    uses: betterapps-hq/pipelines/.github/workflows/cd-npm-publish.yml@<commit sha> # <version>
+    with:
+      # Parity's desktop app is versioned but not published, so only packages with a publishConfig go.
+      require-publish-config: true
+```

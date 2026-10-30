@@ -120,6 +120,63 @@ jobs:
       environment: storybook-test
       preview-name: pr-0
 
+  # The release templates against the release example: its change files bump three packages, and its packages are ones
+  # each publishing rule keeps or leaves out. Dry runs push and publish nothing, so they need no token.
+  release-prepare:
+    name: release-prepare (dry run)
+    uses: ./.github/workflows/release-prepare.yml
+    with:
+      working-directory: examples/release
+      dry-run: true
+
+  # GitHub checks a reusable workflow's permissions before the run starts, so these grant id-token: write, though a dry
+  # run never uses it.
+  cd-npm-publish:
+    name: cd-npm-publish (dry run, publishConfig required)
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/cd-npm-publish.yml
+    with:
+      working-directory: examples/release
+      require-publish-config: true
+      dry-run: true
+
+  cd-npm-publish-public:
+    name: cd-npm-publish (dry run, every public package)
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/cd-npm-publish.yml
+    with:
+      working-directory: examples/release
+      dry-run: true
+
+  release-checked:
+    name: Check the release dry runs
+    needs: [release-prepare, cd-npm-publish, cd-npm-publish-public]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TITLE: ${{ needs.release-prepare.outputs.title }}
+          BUMPED: ${{ needs.release-prepare.outputs.packages }}
+          PULL_REQUEST: ${{ needs.release-prepare.outputs.pull-request }}
+          WITH_CONFIG: ${{ needs.cd-npm-publish.outputs.packages }}
+          PUBLIC: ${{ needs.cd-npm-publish-public.outputs.packages }}
+          PUBLISHED: ${{ needs.cd-npm-publish.outputs.published }} ${{ needs.cd-npm-publish-public.outputs.published }}
+        run: |
+          set -x
+          test "$TITLE" = "chore(release): @pipelines-example/app@1.0.1 and 2 more"
+          test "$(jq -r 'map("\(.name)@\(.from)->\(.to)") | join(" ")' <<< "$BUMPED")" = \
+            "@pipelines-example/app@1.0.0->1.0.1 @pipelines-example/cli@1.0.0->1.0.1 @pipelines-example/core@1.0.0->1.1.0"
+          test -z "$PULL_REQUEST"
+          # In dependency order: core before what depends on it. left-pad is left out, as npm has its version, and the
+          # restricted package, as provenance needs public ones.
+          test "$(jq -r 'map(.name) | join(" ")' <<< "$WITH_CONFIG")" = "@pipelines-example/core @pipelines-example/cli"
+          test "$(jq -r 'map(.name) | join(" ")' <<< "$PUBLIC")" = \
+            "@pipelines-example/core @pipelines-example/app @pipelines-example/cli"
+          test "$PUBLISHED" = "false false"
+
   terraform:
     name: Validate the Terraform modules
     runs-on: ubuntu-latest
@@ -201,6 +258,10 @@ jobs:
       - publish-storybook
       - publish-storybook-skipped
       - unpublish-storybook
+      - release-prepare
+      - cd-npm-publish
+      - cd-npm-publish-public
+      - release-checked
       - terraform
       - terraform-plan
       - terraform-plan-skipped

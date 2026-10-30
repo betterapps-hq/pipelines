@@ -1,0 +1,127 @@
+name: Merge the release
+
+# Merges the release pull request release-prepare opened, through GitHub's auto-merge, which waits for what the base
+# branch's rules require: its checks, and every review thread resolved where the rules ask for that. It turns auto-merge
+# on with the same App or token release-prepare pushed with, so the merge starts the base branch's workflows, as a merge
+# by the job's own token wouldn't. github/README.md shows a caller.
+on:
+  workflow_call:
+    inputs:
+      pull-request:
+        description: The release pull request's number, release-prepare's pull-request output.
+        type: number
+        required: true
+      head-sha:
+        description:
+          The commit to merge, release-prepare's head-sha output. A pull request that has moved on isn't merged.
+        type: string
+        required: true
+      merge-method:
+        description: squash, merge or rebase, one the base branch allows.
+        type: string
+        default: squash
+      app-client-id:
+        description: >-
+          The client ID of the GitHub App that turns on auto-merge, with the RELEASE_APP_PRIVATE_KEY secret. Empty uses
+          the RELEASE_TOKEN secret instead.
+        type: string
+        default: ""
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        description: The GitHub App's private key, used with app-client-id.
+        required: false
+      RELEASE_TOKEN:
+        description: >-
+          A token used when there's no App: a fine-grained personal access token with read and write access to the
+          repository's contents and pull requests.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    name: Merge the release pull request when it's ready
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Everything that writes uses the App's token or RELEASE_TOKEN, so the job's own token only reads.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - id: ready
+        env:
+          HAS_APP: ${{ inputs.app-client-id != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+          HAS_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+        run: |
+          if [ "$HAS_APP" = true ]; then
+            echo "auth=app" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_TOKEN" = true ]; then
+            echo "auth=token" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipped: there's no app-client-id with a RELEASE_APP_PRIVATE_KEY secret, and no RELEASE_TOKEN secret, to merge with."
+          fi
+
+      - if: steps.ready.outputs.auth == 'app'
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # Auto-merge waits only for what the rules require, so without required checks it would merge before CI ran. gh
+      # merges at once when the requirements are already met.
+      - if: steps.ready.outputs.auth != ''
+        name: Turn on auto-merge
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ inputs.pull-request }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          METHOD: ${{ inputs.merge-method }}
+        run: |
+          case "$METHOD" in
+            squash | merge | rebase) ;;
+            *) echo "::error::merge-method is squash, merge or rebase, not '$METHOD'." && exit 1 ;;
+          esac
+          pr=$(gh pr view "$PR" --json state,isCrossRepository,headRefOid,baseRefName,title)
+          state=$(jq -r .state <<< "$pr")
+          if [ "$state" != OPEN ]; then
+            echo "::notice::#$PR is $state already."
+            exit 0
+          fi
+          if [ "$(jq -r .isCrossRepository <<< "$pr")" = true ]; then
+            echo "::error::#$PR comes from a fork, so it isn't a release pull request."
+            exit 1
+          fi
+          if [ "$(jq -r .headRefOid <<< "$pr")" != "$HEAD_SHA" ]; then
+            echo "::notice::#$PR has moved on from ${HEAD_SHA::7}, so the run that pushed its head merges it."
+            exit 0
+          fi
+
+          base=$(jq -r .baseRefName <<< "$pr")
+          rules=$(gh api "repos/$GH_REPO/rules/branches/$base")
+          protected=$(gh api "repos/$GH_REPO/branches/$base" --jq '.protection.required_status_checks.checks // [] | length')
+          if ! jq -e 'any(.[]; .type == "required_status_checks")' <<< "$rules" > /dev/null && [ "$protected" = 0 ]; then
+            echo "::warning::#$PR is left to merge by hand: $base requires no status checks, so it would merge before CI ran."
+            exit 0
+          fi
+          if ! jq -e 'any(.[]; .type == "pull_request" and .parameters.required_review_thread_resolution)' <<< "$rules" > /dev/null; then
+            echo "::warning::$base's rules don't require review threads to be resolved, so #$PR can merge with some open."
+          fi
+          # The query's variables are GraphQL's, not the shell's.
+          # shellcheck disable=SC2016
+          allowed=$(gh api graphql -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}" --jq .data.repository.autoMergeAllowed \
+            -f query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { autoMergeAllowed } }')
+          if [ "$allowed" != true ]; then
+            echo "::warning::#$PR is left to merge by hand: the repository doesn't allow auto-merge. Turn on Allow auto-merge in its settings."
+            exit 0
+          fi
+
+          subject=()
+          if [ "$METHOD" != rebase ]; then subject=(--subject "$(jq -r .title <<< "$pr") (#$PR)"); fi
+          gh pr merge "$PR" --auto "--$METHOD" --match-head-commit "$HEAD_SHA" "${subject[@]}"

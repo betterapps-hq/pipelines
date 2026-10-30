@@ -1,0 +1,314 @@
+name: Prepare the release
+
+# Opens Beachball's release pull request, or updates the open one, from the change files on the base branch: one commit
+# with the versions and changelogs `beachball bump` writes. release-merge then merges it once it's ready, and the versions
+# it changes start delivery. It pushes with a GitHub App's token or a personal one, since a push with the job's own token
+# wouldn't start the pull request's checks. github/README.md shows a caller.
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: The workspace's root, relative to the repository's.
+        type: string
+        default: .
+      base:
+        description: The branch the release pull request merges into, whose change files it releases.
+        type: string
+        default: main
+      branch:
+        description: The release pull request's branch, which each run replaces.
+        type: string
+        default: beachball/release
+      title-prefix:
+        description: The start of the pull request's title and the commit's subject, which go on to list the packages.
+        type: string
+        default: "chore(release):"
+      bump-command:
+        description:
+          What writes the new versions and changelogs and deletes the change files, run in the working directory.
+        type: string
+        default: pnpm exec beachball bump
+      after-bump:
+        description: >-
+          Shell commands run after the bump, in the working directory, before the commit: by default an install, so
+          scripts accept the new versions, and the workspace's format script, if it has one.
+        type: string
+        default: pnpm install --no-frozen-lockfile && pnpm run --if-present format
+      toolchain:
+        description: vite-plus, pnpm, or auto, as the setup action takes it.
+        type: string
+        default: auto
+      app-client-id:
+        description: >-
+          The client ID of the GitHub App that pushes the release branch and opens the pull request, with the
+          RELEASE_APP_PRIVATE_KEY secret. Empty uses the RELEASE_TOKEN secret instead.
+        type: string
+        default: ""
+      dry-run:
+        description: Bump and report the title and packages without pushing or opening anything. It needs no token.
+        type: boolean
+        default: false
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        description: The GitHub App's private key, used with app-client-id.
+        required: false
+      RELEASE_TOKEN:
+        description: >-
+          A token used when there's no App: a fine-grained personal access token with read and write access to the
+          repository's contents and pull requests.
+        required: false
+    outputs:
+      pull-request:
+        description: The release pull request's number; empty when there's nothing to release, in a dry run, or skipped.
+        value: ${{ jobs.prepare.outputs.pull-request }}
+      head-sha:
+        description: The release pull request's head commit, which release-merge merges.
+        value: ${{ jobs.prepare.outputs.head-sha }}
+      title:
+        description: "The release's title and commit subject, such as chore(release): @scope/cli@1.2.0."
+        value: ${{ jobs.prepare.outputs.title }}
+      packages:
+        description: The packages whose version the bump changed, as a JSON array of name, from and to, sorted by name.
+        value: ${{ jobs.prepare.outputs.packages }}
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare the release pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Everything that writes uses the App's token or RELEASE_TOKEN, so the job's own token only reads.
+    permissions:
+      contents: read
+    # Runs queue rather than cancel, so a push to the release branch is never cut off half done. A dry run pushes
+    # nothing, so it waits on nothing.
+    concurrency:
+      group: release-prepare-${{ inputs.dry-run && github.run_id || inputs.branch }}
+      cancel-in-progress: false
+    outputs:
+      pull-request: ${{ steps.pull-request.outputs.number }}
+      head-sha: ${{ steps.pull-request.outputs.head-sha }}
+      title: ${{ steps.release.outputs.title }}
+      packages: ${{ steps.release.outputs.packages }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Releases only the commit CI passed on, while it's still the base branch's head: a newer commit gets its own run.
+      - id: ready
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          BASE: ${{ inputs.base }}
+          COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HAS_APP: ${{ inputs.app-client-id != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+          HAS_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+        run: |
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HAS_APP" = true ]; then
+            auth=app
+          elif [ "$HAS_TOKEN" = true ]; then
+            auth=token
+          else
+            echo "::notice::Skipped: there's no app-client-id with a RELEASE_APP_PRIVATE_KEY secret, and no RELEASE_TOKEN secret, to push the release branch with."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/$BASE" --jq .sha)
+          if [ "$head" != "$COMMIT" ]; then
+            echo "::notice::Skipped: $BASE has moved on from ${COMMIT::7} to ${head::7}, whose own run releases it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "auth=$auth" >> "$GITHUB_OUTPUT"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      # A reusable workflow's ./ is the caller's repository, so it names its own actions in full, pinned to a release's
+      # commit, which Dependabot moves.
+      - if: steps.ready.outputs.ready == 'true'
+        uses: betterapps-hq/pipelines/github/actions/setup@978c87e0f9676edfb85ea5ca735e3cea656c8475 # v1.1.0
+        with:
+          ref: ${{ steps.ready.outputs.commit }}
+          working-directory: ${{ inputs.working-directory }}
+          toolchain: ${{ inputs.toolchain }}
+
+      # The caller's commands reach the shell through env, so the expression isn't spliced into the script.
+      - if: steps.ready.outputs.ready == 'true'
+        name: Bump the versions and changelogs
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          BUMP_COMMAND: ${{ inputs.bump-command }}
+        run: eval "$BUMP_COMMAND"
+      - if: steps.ready.outputs.ready == 'true' && inputs.after-bump != ''
+        name: Run the commands after the bump
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          AFTER_BUMP: ${{ inputs.after-bump }}
+        run: eval "$AFTER_BUMP"
+
+      # The title lists the packages whose version changed, shortened to fit 72 characters, so a squash merge's subject
+      # with its " (#123)" stays inside the 100 that commit hooks allow. The body adds each change file's comment.
+      - if: steps.ready.outputs.ready == 'true'
+        id: release
+        name: Say what the release changes
+        env:
+          TITLE_PREFIX: ${{ inputs.title-prefix }}
+          BASE: ${{ inputs.base }}
+          BODY_FILE: ${{ runner.temp }}/release-body.md
+          MESSAGE_FILE: ${{ runner.temp }}/release-message.txt
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process"
+          import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
+
+          const env = process.env
+          const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+          const lines = (text) => text.split("\n").filter(Boolean)
+          const parse = (text) => {
+            try {
+              return JSON.parse(text)
+            } catch {
+              return undefined
+            }
+          }
+          const output = (name, value) => appendFileSync(env.GITHUB_OUTPUT, `${name}=${value}\n`)
+
+          const changed = git("status", "--porcelain").trim() !== ""
+          output("changed", changed)
+          if (!changed) {
+            output("packages", "[]")
+            appendFileSync(env.GITHUB_STEP_SUMMARY, `Nothing to release: ${env.BASE} has no change files.\n`)
+            process.exit(0)
+          }
+
+          // Paths are the repository root's, whichever directory the workspace is in.
+          const packages = []
+          for (const file of lines(git("diff", "--name-only", "HEAD"))) {
+            if (file !== "package.json" && !file.endsWith("/package.json")) continue
+            const after = parse(readFileSync(file, "utf8"))
+            const before = parse(git("show", `HEAD:${file}`))
+            if (after?.name && after.version && before?.version && after.version !== before.version) {
+              packages.push({ name: after.name, from: before.version, to: after.version })
+            }
+          }
+          packages.sort((a, b) => a.name.localeCompare(b.name))
+
+          // The change files the bump deleted, one or several changes each.
+          const changes = []
+          for (const file of lines(git("diff", "--name-only", "--diff-filter=D", "HEAD"))) {
+            if (!file.endsWith(".json")) continue
+            const content = parse(git("show", `HEAD:${file}`))
+            for (const change of content?.changes ?? [content]) {
+              if (change?.packageName && change.type && typeof change.comment === "string") changes.push(change)
+            }
+          }
+          changes.sort((a, b) => a.packageName.localeCompare(b.packageName))
+
+          const prefix = env.TITLE_PREFIX.trim()
+          const named = packages.map((pkg) => `${pkg.name}@${pkg.to}`)
+          let title = `${prefix} ${packages.length ? `${packages.length} packages` : "changelogs"}`
+          for (let count = named.length; count > 0; count--) {
+            const more = named.length - count
+            const candidate = `${prefix} ${named.slice(0, count).join(", ")}${more ? ` and ${more} more` : ""}`
+            if (candidate.length <= 72) {
+              title = candidate
+              break
+            }
+          }
+
+          const oneLine = (text) => text.replace(/\s+/g, " ").trim()
+          const rows = packages.map((pkg) => `| \`${pkg.name}\` | ${pkg.from} → ${pkg.to} |`)
+          const notes = changes.map((change) => `- \`${change.packageName}\` (${change.type}): ${oneLine(change.comment)}`)
+          let body = [
+            `Beachball's release of the change files on \`${env.BASE}\`: the versions and changelogs \`beachball bump\``,
+            `writes. A later change file on \`${env.BASE}\` replaces this pull request's commit.`,
+            "",
+            ...(rows.length ? ["| Package | Version |", "| --- | --- |", ...rows, ""] : []),
+            ...(notes.length ? ["**Changes:**", "", ...notes, ""] : [])
+          ].join("\n")
+          if (body.length > 60000) body = `${body.slice(0, 60000)}\n\n(Shortened.)\n`
+          writeFileSync(env.BODY_FILE, body)
+          writeFileSync(
+            env.MESSAGE_FILE,
+            [title, "", ...packages.map((pkg) => `${pkg.name}: ${pkg.from} -> ${pkg.to}`)].join("\n") + "\n"
+          )
+          output("title", title)
+          output("packages", JSON.stringify(packages))
+          appendFileSync(env.GITHUB_STEP_SUMMARY, `## ${title}\n\n${body}\n`)
+          NODE
+
+      - if: steps.ready.outputs.auth == 'app' && steps.release.outputs.changed != ''
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # The commit is the token's own, an App's bot or the token's user. A push that wouldn't change the files is
+      # skipped, so the open pull request's checks and reviews stand.
+      - if: steps.ready.outputs.auth != '' && steps.release.outputs.changed == 'true'
+        id: pull-request
+        name: Open or update the release pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BASE: ${{ inputs.base }}
+          BRANCH: ${{ inputs.branch }}
+          BODY_FILE: ${{ runner.temp }}/release-body.md
+          MESSAGE_FILE: ${{ runner.temp }}/release-message.txt
+          TITLE: ${{ steps.release.outputs.title }}
+        run: |
+          if [ -n "$APP_SLUG" ]; then login="${APP_SLUG}[bot]"; else login=$(gh api user --jq .login); fi
+          id=$(gh api "users/$(jq -rn --arg login "$login" '$login | @uri')" --jq .id)
+          git config user.name "$login"
+          git config user.email "$id+$login@users.noreply.github.com"
+          gh auth setup-git
+
+          git switch --quiet --create "$BRANCH"
+          git add --all
+          git commit --quiet --file "$MESSAGE_FILE"
+          if git fetch --quiet --depth 1 origin "refs/heads/$BRANCH" 2> /dev/null &&
+            [ "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+            sha=$(git rev-parse FETCH_HEAD)
+            echo "$BRANCH already has this release, at ${sha::7}."
+          else
+            git push --quiet --force origin "HEAD:refs/heads/$BRANCH"
+            sha=$(git rev-parse HEAD)
+          fi
+
+          number=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" -f head="${GITHUB_REPOSITORY%%/*}:$BRANCH" \
+            -f base="$BASE" -f state=open --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$number" -f title="$TITLE" -F body=@"$BODY_FILE" > /dev/null
+          else
+            number=$(gh api --method POST "repos/$GITHUB_REPOSITORY/pulls" -f head="$BRANCH" -f base="$BASE" \
+              -f title="$TITLE" -F body=@"$BODY_FILE" --jq .number)
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "**Release pull request:** $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$number" >> "$GITHUB_STEP_SUMMARY"
+
+      # With no change files left, an open release pull request would only undo what's on the base branch.
+      - if: steps.ready.outputs.auth != '' && steps.release.outputs.changed == 'false'
+        name: Close a release pull request with nothing left to release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
+          BASE: ${{ inputs.base }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          number=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" -f head="${GITHUB_REPOSITORY%%/*}:$BRANCH" \
+            -f base="$BASE" -f state=open --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$number/comments" \
+              -f body="Closed: \`$BASE\` has no change files left to release." > /dev/null
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/pulls/$number" -f state=closed > /dev/null
+            echo "::notice::Closed #$number, as $BASE has no change files left to release."
+          fi

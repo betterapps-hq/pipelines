@@ -1,0 +1,10 @@
+{
+  "name": "@pipelines-example/restricted",
+  "version": "1.0.0",
+  "description": "Its publishConfig.access is restricted, and provenance needs public packages, so never published.",
+  "type": "module",
+  "exports": "./index.js",
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

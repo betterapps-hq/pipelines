@@ -1,0 +1,13 @@
+{
+  "name": "@pipelines-example/core",
+  "version": "1.0.0",
+  "description": "Published, and a dependency of the CLI and the app, so it's published first.",
+  "type": "module",
+  "exports": "./index.js",
+  "scripts": {
+    "build": "node -e \"console.log('Built @pipelines-example/core.')\""
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

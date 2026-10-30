@@ -1,0 +1,10 @@
+{
+  "name": "@pipelines-example/app",
+  "version": "1.0.0",
+  "description": "Versioned but not published, as Parity's desktop app is: it has no publishConfig.",
+  "type": "module",
+  "exports": "./index.js",
+  "dependencies": {
+    "@pipelines-example/core": "workspace:^"
+  }
+}

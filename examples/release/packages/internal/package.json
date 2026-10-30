@@ -1,0 +1,8 @@
+{
+  "name": "@pipelines-example/internal",
+  "version": "1.0.0",
+  "description": "Private, so never published.",
+  "private": true,
+  "type": "module",
+  "exports": "./index.js"
+}

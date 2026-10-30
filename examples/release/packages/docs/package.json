@@ -1,0 +1,13 @@
+{
+  "name": "@pipelines-example/docs",
+  "version": "1.0.0",
+  "description": "Beachball's shouldPublish is false, so never published.",
+  "type": "module",
+  "exports": "./index.js",
+  "beachball": {
+    "shouldPublish": false
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
