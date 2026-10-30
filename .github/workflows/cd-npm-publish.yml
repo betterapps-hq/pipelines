@@ -258,12 +258,20 @@ jobs:
         run: |
           mapfile -t filters < <(jq -r '.[] | "--filter=\(.name)"' <<< "$PACKAGES")
           rm -f pnpm-publish-summary.json
-          pnpm "${filters[@]}" --recursive publish --provenance --access public --no-git-checks --report-summary
-          published=$(jq -r '.publishedPackages | map("- \(.name)@\(.version)") | join("\n")' pnpm-publish-summary.json)
+          # A failure partway still leaves a summary of what went out before it, so the output and summary say so
+          # before the step fails.
+          status=0
+          pnpm "${filters[@]}" --recursive publish --provenance --access public --no-git-checks --report-summary ||
+            status=$?
+          published=$(jq -r '.publishedPackages | map("- \(.name)@\(.version)") | join("\n")' \
+            pnpm-publish-summary.json 2> /dev/null || true)
           if [ -n "$published" ]; then
             echo "published=true" >> "$GITHUB_OUTPUT"
             printf 'Published:\n\n%s\n' "$published" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "Nothing published: the registry already had every version." >> "$GITHUB_STEP_SUMMARY"
+            if [ "$status" = 0 ]; then
+              echo "Nothing published: the registry already had every version." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
+          exit "$status"

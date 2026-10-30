@@ -608,10 +608,16 @@ through npm's trusted publishing: no token, and with provenance.
   commit's run publishes that one.
 - **A dry run** finds the packages, builds them and runs `pnpm publish --dry-run`, without the environment.
 
-npm checks the name of the workflow file that started the run, not one it calls, so a repository calls this from its own
-`cd-npm.yml` and registers that file as each package's trusted publisher on npmjs.com, with the `npm` environment. npm
-only takes a trusted publisher for a package that exists, so a package's first version is published by hand. Protect the
-`npm` environment so only `main` deploys to it, with an approval if releases should wait for one.
+**What npm needs:**
+
+- **The repository's own `cd-npm.yml` as each package's trusted publisher** on npmjs.com, with the `npm` environment.
+  npm checks the name of the workflow file that started the run, not one it calls, so that file calls this one.
+- **Allow npm publish turned on in that trusted publisher.** This publishes directly, and trusted publishers made after
+  3 September 2026 allow only `npm stage publish` unless it's turned on.
+- **A first version published by hand,** since npm only takes a trusted publisher for a package that exists.
+- **A public repository, and a `repository.url` in each package.json that matches it exactly.** npm makes provenance
+  only from a public repository, and checks the URL against the one the run came from.
+- **The `npm` environment protected,** so only `main` deploys to it, with an approval if releases should wait for one.
 
 | Input                    | Default | What it's for                                                                      |
 | ------------------------ | ------- | ---------------------------------------------------------------------------------- |
