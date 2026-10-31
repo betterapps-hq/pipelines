@@ -1,5 +1,75 @@
 # GitHub Actions templates
 
+## Desktop releases
+
+`cd-desktop-release.yml` calls the app's build and electron-builder commands on Windows, macOS and Linux, collects
+installers and update metadata, and publishes `v<version>` as a GitHub pre-release. Only the desktop package uses these
+tags; npm packages publish separately. A release started by CI builds that successful default-branch push's exact
+commit, even if the branch moves while installers build. Manual retries require a successful push run of `ci-workflow`
+on the selected default-branch commit. Version changes trigger automatic delivery; a manual retry can publish an
+existing version that has no release yet. Published releases are skipped; interrupted draft uploads can be retried.
+
+The caller grants `contents: write` and `actions: read`, keeps its trigger on the default branch, and pins a released
+template commit. `working-directory` defaults to `.`, `app-directory` to `apps/desktop`, `build-command` to
+`pnpm build`, `package-command` to `pnpm exec electron-builder --publish never` (in the app folder),
+`artifact-directory` to `dist`, and `ci-workflow` to `ci.yml`. `os` is a JSON array, defaulting to all three hosted
+operating systems. `dry-run: true` builds and collects artifacts without creating a tag or release. Outputs are
+`version` and `published`. Configure an electron-builder `artifactName` without spaces or repeated dots, such as
+`App-${version}-${os}-${arch}.${ext}`: GitHub must preserve names in both update metadata and the release manifest.
+
+An optional named secret `BUILD_SECRET` can supply one build setting; `build-secret-env` names its environment variable.
+For example, Parity forwards its tldraw key and sets the name to `VITE_TLDRAW_LICENSE_KEY`. No signing credentials are
+read: these are unsigned installers, with a notice in the build log. Signing is separate work.
+
+`cd-desktop-promote.yml` takes `version` without `v` and an `environment`, defaulting to `production`. Configure that
+environment with required reviewers and default-branch-only deployment rules. It requires `contents: write`, checks that
+the beta's immutable tag, version, asset list and SHA-256 hashes match its `desktop-release.json`, and refuses a
+downgrade below the latest stable release. Approval promotes the existing beta to latest without rebuilding or replacing
+files. An already stable release is a no-op. Release publication and promotion share a concurrency group.
+
+For example, a caller's `cd-desktop.yml` can use:
+
+```yaml
+name: CD desktop
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [release, promote]
+        default: release
+      version:
+        description: Existing beta version to promote, without v.
+        type: string
+permissions:
+  contents: read
+jobs:
+  release:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'release') || (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success')
+    permissions:
+      contents: write
+      actions: read
+    uses: betterapps-hq/pipelines/.github/workflows/cd-desktop-release.yml@<commit sha> # <version>
+    with:
+      build-secret-env: VITE_TLDRAW_LICENSE_KEY
+    secrets:
+      BUILD_SECRET: ${{ secrets.VITE_TLDRAW_LICENSE_KEY }}
+  promote:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
+    permissions:
+      contents: write
+    uses: betterapps-hq/pipelines/.github/workflows/cd-desktop-promote.yml@<commit sha> # <version>
+    with:
+      version: ${{ inputs.version }}
+      environment: production
+```
+
 Composite actions live here, in `actions/<name>/action.yml`. Reusable workflows live in the repository's own
 `.github/workflows/`, since GitHub calls them from nowhere else. Both are documented here.
 

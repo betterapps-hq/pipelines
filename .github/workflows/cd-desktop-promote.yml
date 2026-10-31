@@ -1,0 +1,95 @@
+name: Promote a desktop release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The existing beta version to promote, without v. No files are rebuilt or replaced.
+        type: string
+        required: true
+      environment:
+        description: Configure required reviewers and main-only deployment branches on this GitHub environment.
+        type: string
+        default: production
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: write
+    concurrency:
+      group: cd-desktop-publish
+      cancel-in-progress: false
+    steps:
+      - name: Verify and promote the beta
+        id: promote
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ] || { echo "Promotion runs only from the default branch."; exit 1; }
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "Invalid release version."; exit 1; }
+          tag="v$VERSION"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > release.json
+          test "$(jq -r .draft release.json)" = false
+          # An already promoted version is an idempotent no-op, without changing which release is latest.
+          if [ "$(jq -r .prerelease release.json)" = false ]; then
+            echo "Release is already stable."
+            exit 0
+          fi
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir installers
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '"\(.object.type) \(.object.sha)"')
+          read -r kind commit <<< "$ref"
+          [ "$kind" = commit ] || { echo "The release must use its recorded lightweight commit tag."; exit 1; }
+          COMMIT="$commit" node --input-type=module <<'NODE'
+          import {createHash} from "node:crypto"
+          import {readdirSync, readFileSync} from "node:fs"
+          const manifest = JSON.parse(readFileSync("installers/desktop-release.json", "utf8"))
+          if (manifest.schema !== 1 || manifest.version !== process.env.VERSION || manifest.commit !== process.env.COMMIT) {
+            throw new Error("Release manifest does not match its version and immutable tag")
+          }
+          if (!Array.isArray(manifest.assets) || !manifest.assets.some(asset => /\.(exe|dmg|AppImage)$/.test(asset.name))) {
+            throw new Error("Release has no recorded installers")
+          }
+          const names = []
+          for (const {name, sha256} of manifest.assets) {
+            if (typeof name !== "string" || !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(name)) throw new Error("Unsafe asset name")
+            if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error("Invalid checksum")
+            const actual = createHash("sha256").update(readFileSync(`installers/${name}`)).digest("hex")
+            if (actual !== sha256) throw new Error(`Release file changed: ${name}`)
+            names.push(name)
+          }
+          const actual = readdirSync("installers").filter(name => name !== "desktop-release.json").sort()
+          if (JSON.stringify(names.sort()) !== JSON.stringify(actual)) throw new Error("Release asset list changed")
+          NODE
+          if gh api "repos/$GITHUB_REPOSITORY/releases/latest" > latest.json 2> latest-error.txt; then
+            LATEST=$(jq -r .tag_name latest.json) node --input-type=module <<'NODE'
+          const parse = version => {
+            const parts = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version)
+            if (!parts) throw new Error("Latest stable release has an unexpected version")
+            return parts.slice(1).map(BigInt)
+          }
+          const latest = parse(process.env.LATEST)
+          const target = parse(process.env.VERSION)
+          let newer = false
+          for (let i=0; i<3; i++) {
+            if (target[i] === latest[i]) continue
+            newer = target[i] > latest[i]
+            break
+          }
+          if (!newer) throw new Error("Promotion cannot replace a newer or equal stable release")
+          NODE
+          elif ! grep -q 'HTTP 404' latest-error.txt; then
+            cat latest-error.txt
+            exit 1
+          fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          echo "promoted=true" >> "$GITHUB_OUTPUT"

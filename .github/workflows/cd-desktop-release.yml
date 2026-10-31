@@ -1,0 +1,303 @@
+name: Release a desktop app
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: .
+      app-directory:
+        description:
+          The app folder, relative to the working directory, containing package.json and electron-builder config.
+        type: string
+        default: apps/desktop
+      build-command:
+        type: string
+        default: pnpm build
+      package-command:
+        description: Runs in app-directory. electron-builder selects its host platform from the app's config.
+        type: string
+        default: pnpm exec electron-builder --publish never
+      artifact-directory:
+        description: Installer output, relative to app-directory.
+        type: string
+        default: dist
+      os:
+        type: string
+        default: '["windows-latest", "macos-latest", "ubuntu-latest"]'
+      ci-workflow:
+        description: CI workflow file whose successful push run is required for a manual retry.
+        type: string
+        default: ci.yml
+      build-secret-env:
+        description: Optional environment variable name for BUILD_SECRET, such as VITE_TLDRAW_LICENSE_KEY.
+        type: string
+        default: ""
+      dry-run:
+        description: Build and collect the artifacts without creating a tag or release. Used to test the template.
+        type: boolean
+        default: false
+    secrets:
+      BUILD_SECRET:
+        required: false
+    outputs:
+      version:
+        description: Desktop version selected for this run, or empty when skipped.
+        value: ${{ jobs.select.outputs.version }}
+      published:
+        value: ${{ jobs.publish.outputs.published || 'false' }}
+        description: Whether this run published a beta release.
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.select.outputs.version }}
+      commit: ${{ steps.ready.outputs.commit }}
+    steps:
+      - id: ready
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_EVENT: ${{ github.event.workflow_run.event }}
+          CI_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CI_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          CI_RESULT: ${{ github.event.workflow_run.conclusion }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+          CI_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
+        run: |
+          skip() { echo "::notice::Skipped: $1"; exit 0; }
+          if [ "$DRY_RUN" = true ]; then
+            echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ] || skip "desktop releases run only from $DEFAULT_BRANCH."
+          if [ -n "$CI_SHA" ]; then
+            [ "$CI_EVENT" = push ] && [ "$CI_BRANCH" = "$DEFAULT_BRANCH" ] &&
+              [ "$CI_REPOSITORY" = "$GITHUB_REPOSITORY" ] && [ "$CI_RESULT" = success ] ||
+              skip "only a successful CI push from this repository's default branch can release."
+            [ "$CI_WORKFLOW_PATH" = ".github/workflows/$CI_WORKFLOW" ] || skip "the completed workflow is not ci-workflow."
+            [[ "$CI_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            commit=$CI_SHA
+          else
+            [ -n "$CI_WORKFLOW" ] || skip "a manual retry needs ci-workflow."
+            passed=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/runs" \
+              -f head_sha="$GITHUB_SHA" -f branch="$DEFAULT_BRANCH" -f event=push -f status=success --jq .total_count)
+            [ "$passed" -gt 0 ] || skip "CI hasn't passed on this commit's push."
+            commit=$GITHUB_SHA
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - if: steps.ready.outputs.commit != ''
+        uses: betterapps-hq/pipelines/github/actions/setup@0b0ed2e646a72e6db61a303cee36127aa5e17a48 # v1.3.1
+        with:
+          ref: ${{ steps.ready.outputs.commit }}
+          fetch-depth: 2
+          working-directory: ${{ inputs.working-directory }}
+          install: "false"
+      - if: steps.ready.outputs.commit != ''
+        id: select
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_DIRECTORY: ${{ inputs.app-directory }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          version=$(node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            import {join} from "node:path";
+            const {version} = JSON.parse(readFileSync(join(process.env.APP_DIRECTORY, "package.json"), "utf8"));
+            if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) throw new Error("Desktop versions use MAJOR.MINOR.PATCH");
+            console.log(version);
+          ')
+          if [ "$DRY_RUN" != true ]; then
+            release=$(mktemp)
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$version" > "$release" 2> release-error.txt; then
+              # Published releases are immutable here. A draft is retried after an interrupted upload.
+              [ "$(jq -r .draft "$release")" = true ] || { echo "::notice::v$version already exists."; exit 0; }
+            elif ! grep -q 'HTTP 404' release-error.txt; then
+              cat release-error.txt
+              exit 1
+            fi
+            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
+              manifest=$(node -e 'console.log(require("node:path").posix.join(process.argv[1], process.argv[2], "package.json"))' \
+                "$(git rev-parse --show-prefix)" "$APP_DIRECTORY")
+              previous=$(git show "HEAD^:$manifest" 2>/dev/null | node --input-type=module -e '
+                let text=""; for await (const chunk of process.stdin) text+=chunk;
+                try {console.log(JSON.parse(text).version)} catch {process.exit(1)}
+              ' || true)
+              [ "$previous" != "$version" ] || { echo "::notice::Desktop version did not change."; exit 0; }
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: select
+    if: needs.select.outputs.version != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: betterapps-hq/pipelines/github/actions/setup@0b0ed2e646a72e6db61a303cee36127aa5e17a48 # v1.3.1
+        with:
+          ref: ${{ needs.select.outputs.commit }}
+          working-directory: ${{ inputs.working-directory }}
+      - name: Build the app
+        env:
+          BUILD_SECRET: ${{ secrets.BUILD_SECRET }}
+          BUILD_SECRET_ENV: ${{ inputs.build-secret-env }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: |
+          if [ -n "$BUILD_SECRET_ENV" ]; then
+            [[ "$BUILD_SECRET_ENV" =~ ^[A-Z_][A-Z0-9_]*$ ]] || exit 1
+            if [ -n "$BUILD_SECRET" ]; then export "$BUILD_SECRET_ENV=$BUILD_SECRET";
+            else echo "::notice::No optional build secret configured."; fi
+          fi
+          bash -e -o pipefail -c "$BUILD_COMMAND"
+      - name: Package unsigned installers
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.app-directory }}
+        env:
+          PACKAGE_COMMAND: ${{ inputs.package-command }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          echo "::notice::Unsigned packaging; signing is configured separately."
+          bash -e -o pipefail -c "$PACKAGE_COMMAND"
+      - id: artifacts
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          APP_DIRECTORY: ${{ inputs.app-directory }}
+          ARTIFACT_DIRECTORY: ${{ inputs.artifact-directory }}
+          RUNNER_PLATFORM: ${{ runner.os }}
+        run: |
+          node --input-type=module <<'NODE'
+          import {appendFileSync, readdirSync} from "node:fs"
+          import {resolve, relative, isAbsolute} from "node:path"
+          const root = resolve(process.env.GITHUB_WORKSPACE)
+          const directory = resolve(root, process.env.WORKING_DIRECTORY, process.env.APP_DIRECTORY, process.env.ARTIFACT_DIRECTORY)
+          const within = relative(root, directory)
+          if (within.startsWith("..") || isAbsolute(within) || /[\r\n]/.test(directory)) throw new Error("Artifacts must stay in the workspace")
+          const extension = {Windows: ".exe", macOS: ".dmg", Linux: ".AppImage"}[process.env.RUNNER_PLATFORM]
+          if (!extension || !readdirSync(directory, {withFileTypes:true}).some(file => file.isFile() && file.name.endsWith(extension))) {
+            throw new Error(`Missing ${process.env.RUNNER_PLATFORM} installer (${extension})`)
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `directory=${directory.replaceAll("\\", "/")}\n`)
+          NODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ matrix.os }}
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            ${{ steps.artifacts.outputs.directory }}/*.exe
+            ${{ steps.artifacts.outputs.directory }}/*.dmg
+            ${{ steps.artifacts.outputs.directory }}/*.AppImage
+            ${{ steps.artifacts.outputs.directory }}/*.zip
+            ${{ steps.artifacts.outputs.directory }}/*.blockmap
+            ${{ steps.artifacts.outputs.directory }}/latest*.yml
+
+  publish:
+    needs: [select, build]
+    if: needs.select.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: cd-desktop-publish
+      cancel-in-progress: false
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: desktop-*
+          path: platform-artifacts
+          merge-multiple: false
+      - name: Reject duplicate platform filenames before combining artifacts
+        id: collect
+        run: |
+          node --input-type=module <<'NODE'
+          import {readdirSync, mkdirSync, copyFileSync} from "node:fs"
+          import {join} from "node:path"
+          const assets = new Map()
+          for (const platform of readdirSync("platform-artifacts")) {
+            for (const file of readdirSync(join("platform-artifacts", platform), {withFileTypes:true})) {
+              if (!file.isFile()) throw new Error(`Unexpected asset directory: ${file.name}`)
+              if (assets.has(file.name)) throw new Error(`Duplicate platform asset: ${file.name}`)
+              assets.set(file.name, join("platform-artifacts", platform, file.name))
+            }
+          }
+          mkdirSync("installers")
+          for (const [name, path] of assets) copyFileSync(path, join("installers", name))
+          NODE
+      - name: Record the exact release files
+        env:
+          VERSION: ${{ needs.select.outputs.version }}
+          COMMIT: ${{ needs.select.outputs.commit }}
+        run: |
+          node --input-type=module <<'NODE'
+          import {createHash} from "node:crypto"
+          import {readdirSync, readFileSync, writeFileSync} from "node:fs"
+          const files = readdirSync("installers").sort()
+          if (!files.some(name => /\.(exe|dmg|AppImage)$/.test(name))) throw new Error("No installer artifacts")
+          const assets = files.map(name => {
+            if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(name)) {
+              throw new Error(`GitHub would rename ${name}; configure an artifactName without spaces or repeated dots`)
+            }
+            return {name, sha256:createHash("sha256").update(readFileSync(`installers/${name}`)).digest("hex")}
+          })
+          writeFileSync("installers/desktop-release.json", JSON.stringify({schema:1, version:process.env.VERSION, commit:process.env.COMMIT, assets}, null, 2))
+          NODE
+      - if: inputs.dry-run
+        run: echo "Dry run collected and checksummed the installers; no tag or release was created."
+      - if: ${{ !inputs.dry-run }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.select.outputs.commit }}
+          path: source
+          persist-credentials: false
+      - if: ${{ !inputs.dry-run }}
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.select.outputs.version }}
+          COMMIT: ${{ needs.select.outputs.commit }}
+          APP_DIRECTORY: ${{ inputs.working-directory }}/${{ inputs.app-directory }}
+        run: |
+          tag="v$VERSION"
+          notes="source/$APP_DIRECTORY/CHANGELOG.md"
+          [ -f "$notes" ] || { echo "No app changelog was found."; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '"\(.object.type) \(.object.sha)"' > tag-commit.txt 2> tag-error.txt; then
+            test "$(cat tag-commit.txt)" = "commit $COMMIT"
+          elif ! grep -q 'HTTP 404' tag-error.txt; then
+            cat tag-error.txt
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish > release.json 2>/dev/null; then
+            test "$(jq -r .isDraft release.json)" = true
+            test "$(jq -r .targetCommitish release.json)" = "$COMMIT"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --draft --prerelease \
+              --title "$tag" --notes-file "$notes"
+          fi
+          mapfile -d '' files < <(find installers -maxdepth 1 -type f -print0)
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber -- "${files[@]}"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          echo "published=true" >> "$GITHUB_OUTPUT"

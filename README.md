@@ -86,6 +86,11 @@ Cloud services the templates need come from Terraform, never by hand or from a p
 
 ## Rules
 
+Desktop delivery uses `cd-desktop-release.yml` to build electron-builder installers on Windows, macOS and Linux and
+publish a GitHub beta after a successful CI push. `cd-desktop-promote.yml` promotes that beta behind a protected
+environment, checking its recorded installer hashes and preserving its files. [The GitHub guide](github/README.md)
+documents both callers.
+
 - **Callers pin a full commit SHA,** with the version in a comment, and Dependabot moves the pins. A pull request can
   then never run a changed copy of a template.
 - **Templates name their own actions in full, pinned to a release's commit,** as they pin third-party actions:
