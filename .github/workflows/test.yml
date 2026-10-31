@@ -378,6 +378,119 @@ jobs:
       working-directory: examples/release
       dry-run: true
 
+  desktop-release:
+    name: cd-desktop-release (dry run)
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/cd-desktop-release.yml
+    with:
+      working-directory: examples/desktop
+      app-directory: .
+      build-command: node --version
+      package-command: node package.mjs
+      dry-run: true
+
+  desktop-checked:
+    name: Check desktop release and promotion
+    needs: desktop-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the dry-run output
+        env:
+          VERSION: ${{ needs.desktop-release.outputs.version }}
+          PUBLISHED: ${{ needs.desktop-release.outputs.published }}
+        run: |
+          test "$VERSION" = 1.0.0
+          test "$PUBLISHED" = false
+      - name: Check desktop release accepts only successful CI pushes or checked manual retries
+        shell: bash
+        run: |
+          script=$(yq '.jobs.select.steps[] | select(.id == "ready") | .run' .github/workflows/cd-desktop-release.yml)
+          export DRY_RUN=false DEFAULT_BRANCH=main GITHUB_REF=refs/heads/main GITHUB_REPOSITORY=example/repository
+          export GITHUB_SHA=1111111111111111111111111111111111111111 CI_SHA=2222222222222222222222222222222222222222
+          export CI_EVENT=push CI_BRANCH=main CI_REPOSITORY=example/repository CI_RESULT=success
+          export CI_WORKFLOW=ci.yml CI_WORKFLOW_PATH=.github/workflows/ci.yml GH_TOKEN=unused TEST_CI_COUNT=1
+          gh() { test "$1" = api && echo "$TEST_CI_COUNT"; }
+          export -f gh
+          run_gate() {
+            export GITHUB_OUTPUT
+            GITHUB_OUTPUT=$(mktemp)
+            bash -e -o pipefail -c "$script"
+          }
+          run_gate
+          grep -qx "commit=$CI_SHA" "$GITHUB_OUTPUT"
+          for invalid in fork pr failed branch workflow; do
+            (
+              case "$invalid" in
+                fork) export CI_REPOSITORY=someone/fork ;;
+                pr) export CI_EVENT=pull_request ;;
+                failed) export CI_RESULT=failure ;;
+                branch) export CI_BRANCH=feature ;;
+                workflow) export CI_WORKFLOW_PATH=.github/workflows/other.yml ;;
+              esac
+              run_gate
+              test ! -s "$GITHUB_OUTPUT"
+            )
+          done
+          export CI_SHA=
+          run_gate
+          grep -qx "commit=$GITHUB_SHA" "$GITHUB_OUTPUT"
+          export TEST_CI_COUNT=0
+          run_gate
+          test ! -s "$GITHUB_OUTPUT"
+      - name: Exercise the actual promotion script with a mocked GitHub API
+        shell: bash
+        run: |
+          script=$(yq '.jobs.promote.steps[] | select(.id == "promote") | .run' .github/workflows/cd-desktop-promote.yml)
+          base=$(mktemp -d)
+          export TEST_FIXTURE="$base/good" TEST_EDITS="$base/edits" TEST_COMMIT=1111111111111111111111111111111111111111
+          export GITHUB_REPOSITORY=example/repository GITHUB_REF=refs/heads/main DEFAULT_BRANCH=main VERSION=1.0.0 GH_TOKEN=unused
+          node --input-type=module <<'NODE'
+          import {mkdirSync, writeFileSync} from "node:fs"
+          import {createHash} from "node:crypto"
+          const dir = process.env.TEST_FIXTURE
+          mkdirSync(dir)
+          const bytes = "installer fixture"
+          writeFileSync(`${dir}/Example-1.0.0.exe`, bytes)
+          writeFileSync(`${dir}/desktop-release.json`, JSON.stringify({schema:1, version:"1.0.0", commit:process.env.TEST_COMMIT,
+            assets:[{name:"Example-1.0.0.exe", sha256:createHash("sha256").update(bytes).digest("hex")}]}))
+          NODE
+          gh() {
+            case "$1 $2" in
+              "api repos/example/repository/releases/tags/v1.0.0") printf '{"draft":false,"prerelease":%s}\n' "$TEST_PRERELEASE" ;;
+              "api repos/example/repository/commits/v1.0.0") echo "$TEST_COMMIT" ;;
+              "api repos/example/repository/releases/latest") printf '{"tag_name":"v%s"}\n' "$TEST_LATEST" ;;
+              "release download") cp -R "$TEST_FIXTURE" installers ;;
+              "release edit") printf '%s\n' "$*" >> "$TEST_EDITS" ;;
+              *) echo "Unexpected gh call" >&2; return 1 ;;
+            esac
+          }
+          export -f gh
+          export TEST_PRERELEASE=true TEST_LATEST=0.9.0
+          run_case() {
+            local work
+            work=$(mktemp -d)
+            export GITHUB_OUTPUT="$work/output"
+            (cd "$work" && bash -e -o pipefail -c "$script")
+          }
+          run_case
+          test "$(wc -l < "$TEST_EDITS")" = 1
+          grep -q -- '--prerelease=false --latest' "$TEST_EDITS"
+          export TEST_LATEST=2.0.0
+          if run_case; then echo "A downgrade unexpectedly succeeded"; exit 1; fi
+          export TEST_LATEST=0.9.0
+          printf changed >> "$TEST_FIXTURE/Example-1.0.0.exe"
+          if run_case; then echo "Changed installer unexpectedly promoted"; exit 1; fi
+          export TEST_PRERELEASE=false
+          run_case
+          export TEST_PRERELEASE=true GITHUB_REF=refs/heads/feature
+          if run_case; then echo "A feature branch unexpectedly promoted"; exit 1; fi
+          test "$(wc -l < "$TEST_EDITS")" = 1
+
   release-checked:
     name: Check the release dry runs
     needs: [release-prepare, cd-npm-publish, cd-npm-publish-public]
@@ -612,6 +725,8 @@ jobs:
       - release-prepare
       - cd-npm-publish
       - cd-npm-publish-public
+      - desktop-release
+      - desktop-checked
       - release-checked
       - preview-web
       - preview-web-skipped
