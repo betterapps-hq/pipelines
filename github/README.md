@@ -689,8 +689,8 @@ the run's summary, as addresses and actions.
 Secrets: the optional named credentials in [the table above](#where-credentials-come-from), with environment overrides.
 The `TF_APPLY_ENABLED` marker belongs only in the selected environment and is not a caller input.
 
-Output: `result`, which is `applied`, `no-changes`, or `skipped` when state credentials or environment approval are
-absent.
+Output: `result`, which is `applied`, `no-changes`, or `skipped` when state credentials or the environment enablement
+marker are absent.
 
 Permissions: `contents: read`.
 
