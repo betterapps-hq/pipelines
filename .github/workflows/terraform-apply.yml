@@ -65,7 +65,9 @@ jobs:
     name: Apply ${{ inputs.working-directory }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     permissions:
       contents: read
     # Applies to one project queue rather than cancel, and a newer push replaces one still waiting, so the last push's

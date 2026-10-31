@@ -226,7 +226,9 @@ jobs:
     if: ${{ !inputs.dry-run && needs.select.outputs.any == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     permissions:
       contents: read
       # npm's trusted publishing exchanges the run's OIDC token for a short-lived one, and provenance is signed with it.

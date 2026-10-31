@@ -25,7 +25,8 @@ read: these are unsigned installers, with a notice in the build log. Signing is 
 environment with required reviewers and default-branch-only deployment rules. It requires `contents: write`, checks that
 the beta's immutable tag, version, asset list and SHA-256 hashes match its `desktop-release.json`, and refuses a
 downgrade below the latest stable release. Approval promotes the existing beta to latest without rebuilding or replacing
-files. An already stable release is a no-op. Release publication and promotion share a concurrency group.
+files. An already stable release is a no-op. Release publication and promotion share a concurrency group. The
+deployment's environment URL links to that version's GitHub release page, where its installers can be downloaded.
 
 For example, a caller's `cd-desktop.yml` can use:
 
@@ -741,6 +742,10 @@ A reusable workflow that applies a Terraform project in the GitHub environment t
 after a pull request merges. It plans from the commit that started the run, applies that plan, and writes what it did to
 the run's summary, as addresses and actions.
 
+The job uses `environment.deployment: false`: environment secrets, variables, branch policies, required reviewers and
+wait timers still apply, without creating GitHub deployment records. Environments with custom deployment protection rule
+apps are incompatible with this setting and the job will fail.
+
 - **It applies a fresh plan,** not the one the pull request showed. That one was made from the pull request's branch,
   and `main` may have moved since. Terraform refuses to apply a plan if the state changes after it's made.
 - **Its credentials come from named caller secrets or the environment,** by the names in
@@ -908,6 +913,11 @@ Secrets: `RELEASE_APP_PRIVATE_KEY` with `app-client-id`, or `RELEASE_TOKEN`. Per
 
 A reusable workflow. It publishes the workspace's packages whose versions npm doesn't have yet, in dependency order,
 through npm's trusted publishing: no token, and with provenance.
+
+The publishing job uses `environment.deployment: false`, keeping the named environment for npm's OIDC trusted publisher
+and its secrets, variables, branch policies, required reviewers and wait timers, without creating GitHub deployment
+records. Environments with custom deployment protection rule apps are incompatible with this setting and the job will
+fail.
 
 - **What's published:** packages that aren't `private` and whose package.json doesn't set Beachball's
   `shouldPublish: false`. With `require-publish-config`, only those with a `publishConfig` too, for a workspace where a

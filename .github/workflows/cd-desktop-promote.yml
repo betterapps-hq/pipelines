@@ -19,7 +19,9 @@ jobs:
   promote:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://github.com/${{ github.repository }}/releases/tag/v${{ inputs.version }}
     permissions:
       contents: write
     concurrency:
