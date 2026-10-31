@@ -44,7 +44,7 @@ jobs:
           for marker in true false missing; do
             output=$(mktemp)
             # Simulate a broader scope enabling applies; only the environment API result may enable this job.
-            TEST_MARKER="$marker" HAS_STATE_CREDENTIALS=true APPLY_ENABLED=true ENVIRONMENT='test/room space' \
+            TEST_MARKER="$marker" HAS_STATE_CREDENTIALS=true GH_TOKEN=unused APPLY_ENABLED=true ENVIRONMENT='test/room space' \
               GITHUB_REPOSITORY=example/repository GITHUB_OUTPUT="$output" run_gate
             if [ "$marker" = true ]; then
               grep -qx 'ready=true' "$output"

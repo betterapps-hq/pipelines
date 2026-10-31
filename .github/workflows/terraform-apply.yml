@@ -47,7 +47,7 @@ on:
         description: Cloudflare provider token, when the project uses it.
         required: false
       TF_GITHUB_TOKEN:
-        description: GitHub provider token, when the project uses it.
+        description: Token with Environments read for the readiness lookup, plus provider permissions when needed.
         required: false
       NEON_API_KEY:
         description: Neon provider key, when the project uses it.
@@ -89,13 +89,13 @@ jobs:
         working-directory: .
         env:
           HAS_STATE_CREDENTIALS: ${{ secrets.TF_STATE_ACCESS_KEY_ID != '' && secrets.TF_STATE_SECRET_ACCESS_KEY != '' }}
-          GH_TOKEN: ${{ secrets.TF_GITHUB_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.TF_GITHUB_TOKEN }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
           # The merged vars context also includes organization/repository values. Read the selected environment
           # directly, so a marker at either of those broader scopes cannot enable an unconfigured environment.
           APPLY_ENABLED=
-          if [ "$HAS_STATE_CREDENTIALS" = true ]; then
+          if [ "$HAS_STATE_CREDENTIALS" = true ] && [ -n "$GH_TOKEN" ]; then
             encoded=$(jq -rn --arg name "$ENVIRONMENT" '$name | @uri')
             APPLY_ENABLED=$(gh api "repos/$GITHUB_REPOSITORY/environments/$encoded/variables/TF_APPLY_ENABLED" --jq '.value' 2>/dev/null) || APPLY_ENABLED=
           fi

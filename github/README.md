@@ -492,9 +492,9 @@ A project they run has:
   environment's branch rules and required reviewers. An administrator must configure those rules first, then set the
   environment variable `TF_APPLY_ENABLED` to `true`. Do not define that marker at organization or repository level or
   forward it from a caller: an automatically created environment must not enable an apply. The workflow reads the marker
-  through the selected environment's API, rather than the merged `vars` context. It uses `TF_GITHUB_TOKEN`, or the job's
-  `GITHUB_TOKEN` when no provider token is passed; that token needs Environments read access. If the lookup is
-  unavailable or the marker is absent, nothing applies.
+  through the selected environment's API, rather than the merged `vars` context. It uses `TF_GITHUB_TOKEN`, which needs
+  Environments read even when the project does not use the GitHub provider. The job's `GITHUB_TOKEN` cannot grant that
+  permission. If the token is missing, the lookup is unavailable or the marker is absent, nothing applies.
 - **Organization secrets use selected-repository access.** Keep a shared R2 state bucket's write keys as
   `TF_STATE_ACCESS_KEY_ID` and `TF_STATE_SECRET_ACCESS_KEY`, and its read-only keys as `TF_STATE_READ_ACCESS_KEY_ID` and
   `TF_STATE_READ_SECRET_ACCESS_KEY`. Set `TF_STATE_BUCKET` and `TF_STATE_ENDPOINT` as organization variables with the
@@ -514,13 +514,13 @@ A project they run has:
   secrets in environment storage instead when environment-only access is required. Never pass write credentials to pull
   request plans or use `secrets: inherit`; forward only the provider credentials that a project needs.
 
-| Secret                       | When it's needed                                                                               |
-| ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| `TF_STATE_ACCESS_KEY_ID`     | Always: an R2 access key for the state bucket. Without it and its secret, planning is skipped. |
-| `TF_STATE_SECRET_ACCESS_KEY` | Always: that key's secret.                                                                     |
-| `CLOUDFLARE_API_TOKEN`       | When the project uses the cloudflare provider.                                                 |
-| `TF_GITHUB_TOKEN`            | When it uses the github provider, which reads it as `GITHUB_TOKEN`.                            |
-| `NEON_API_KEY`               | When it uses the neon provider.                                                                |
+| Secret                       | When it's needed                                                                                            |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `TF_STATE_ACCESS_KEY_ID`     | Always: an R2 access key for the state bucket. Without it and its secret, planning is skipped.              |
+| `TF_STATE_SECRET_ACCESS_KEY` | Always: that key's secret.                                                                                  |
+| `CLOUDFLARE_API_TOKEN`       | When the project uses the cloudflare provider.                                                              |
+| `TF_GITHUB_TOKEN`            | Applies: Environments read for readiness, plus provider permissions. Plans: when using the github provider. |
+| `NEON_API_KEY`               | When it uses the neon provider.                                                                             |
 
 GitHub doesn't let a secret's name start with `GITHUB_`, so the github provider's token is `TF_GITHUB_TOKEN`. A project
 that needs another provider's credential gets it added here, by name, in a release.
