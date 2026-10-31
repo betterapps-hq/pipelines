@@ -30,6 +30,29 @@ jobs:
       - name: Check Tests pass waits on every job
         run: |
           diff <(yq '.jobs | keys | .[]' .github/workflows/test.yml | grep -vx tests-pass | sort)             <(yq '.jobs["tests-pass"].needs[]' .github/workflows/test.yml | sort)
+      - name: Check Terraform enablement comes from the selected environment
+        shell: bash
+        run: |
+          script=$(yq '.jobs.apply.steps[] | select(.id == "ready") | .run' .github/workflows/terraform-apply.yml)
+          gh() {
+            test "$1" = api
+            test "$2" = repos/example/repository/environments/test%2Froom%20space/variables/TF_APPLY_ENABLED
+            if [ "$TEST_MARKER" = missing ]; then return 1; fi
+            printf '%s\n' "$TEST_MARKER"
+          }
+          run_gate() { eval "$script"; }
+          for marker in true false missing; do
+            output=$(mktemp)
+            # Simulate a broader scope enabling applies; only the environment API result may enable this job.
+            TEST_MARKER="$marker" HAS_STATE_CREDENTIALS=true APPLY_ENABLED=true ENVIRONMENT='test/room space' \
+              GITHUB_REPOSITORY=example/repository GITHUB_OUTPUT="$output" run_gate
+            if [ "$marker" = true ]; then
+              grep -qx 'ready=true' "$output"
+            else
+              grep -qx 'result=skipped' "$output"
+            fi
+            rm "$output"
+          done
 
   setup:
     name: setup (${{ matrix.example }}, ${{ matrix.os }})
