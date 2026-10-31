@@ -54,7 +54,7 @@ on:
         required: false
     outputs:
       result:
-        description: applied, no-changes, or skipped when credentials or environment approval are absent.
+        description: applied, no-changes, or skipped when credentials or the environment enablement marker are absent.
         value: ${{ jobs.apply.outputs.result }}
 
 permissions:
