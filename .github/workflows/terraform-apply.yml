@@ -1,14 +1,15 @@
 name: Terraform apply
 
 # Applies a Terraform project in the GitHub environment the caller names, such as from main after a merge: it plans
-# against the state in R2 and applies that plan. The environment holds the credentials, so its branch rules decide what
-# can apply, and its required reviewers, where GitHub's plan has them, approve before anything runs. Until it has them,
+# against the state in R2 and applies that plan. Credentials can come from the environment or be passed by the caller.
+# The environment's branch rules decide what can apply, and its required reviewers approve before anything runs.
+# Until credentials are available,
 # the apply skips with a notice. github/README.md shows a caller.
 on:
   workflow_call:
     inputs:
       environment:
-        description: The GitHub environment that holds the credentials and gates the apply, such as infrastructure.
+        description: The GitHub environment that gates the apply, such as infrastructure.
         type: string
         required: true
       working-directory:
@@ -35,9 +36,25 @@ on:
         description: Print the plan and what the apply did in the run's log. Terraform hides values marked sensitive.
         type: boolean
         default: true
+    secrets:
+      TF_STATE_ACCESS_KEY_ID:
+        description: R2 state bucket access key. An environment secret with this name takes precedence.
+        required: false
+      TF_STATE_SECRET_ACCESS_KEY:
+        description: R2 state bucket secret key.
+        required: false
+      CLOUDFLARE_API_TOKEN:
+        description: Cloudflare provider token, when the project uses it.
+        required: false
+      TF_GITHUB_TOKEN:
+        description: GitHub provider token, when the project uses it.
+        required: false
+      NEON_API_KEY:
+        description: Neon provider key, when the project uses it.
+        required: false
     outputs:
       result:
-        description: applied, no-changes, or skipped when the environment has no state credentials.
+        description: applied, no-changes, or skipped when no state credentials are available.
         value: ${{ jobs.apply.outputs.result }}
 
 permissions:
@@ -66,8 +83,7 @@ jobs:
     env:
       TF_IN_AUTOMATION: "true"
     steps:
-      # The credentials are the environment's own secrets, set by hand or by another Terraform project; until they
-      # exist there's nothing to apply with.
+      # Environment secrets override named caller secrets. Both routes still wait for the environment's protection.
       - id: ready
         name: Check for state credentials
         working-directory: .
@@ -78,7 +94,7 @@ jobs:
           if [ "$HAS_STATE_CREDENTIALS" = true ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Skipped: the $ENVIRONMENT environment has no TF_STATE_ACCESS_KEY_ID and TF_STATE_SECRET_ACCESS_KEY yet, so nothing was applied."
+            echo "::notice::Skipped: no TF_STATE_ACCESS_KEY_ID and TF_STATE_SECRET_ACCESS_KEY are available for $ENVIRONMENT, so nothing was applied."
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "result=skipped" >> "$GITHUB_OUTPUT"
           fi

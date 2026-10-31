@@ -487,10 +487,24 @@ A project they run has:
   read what the project manages. Plans don't take the state lock, so read-only state credentials are enough. Some things
   only show to a token that can write them, such as a ruleset's bypass actors, and a project that manages those needs
   that token for its plans too.
-- **`terraform-apply` takes the environment's own secrets,** by the same names, and nothing from the caller. Branch
-  rules on the environment can keep those write credentials to `main`, and required reviewers can approve each apply.
-- **Required reviewers need a public repository or a paid plan.** A private repository on GitHub Free has environments,
-  their secrets and branch rules, as Copacker's does, but its applies run without waiting for anyone.
+- **`terraform-apply` accepts named secrets from the caller or the environment.** Environment secrets with matching
+  names take precedence. The job still waits for the named environment's branch rules and required reviewers.
+- **Organization secrets use selected-repository access.** Keep a shared R2 state bucket's write keys as
+  `TF_STATE_ACCESS_KEY_ID` and `TF_STATE_SECRET_ACCESS_KEY`, and its read-only keys as `TF_STATE_READ_ACCESS_KEY_ID` and
+  `TF_STATE_READ_SECRET_ACCESS_KEY`. Set `TF_STATE_BUCKET` and `TF_STATE_ENDPOINT` as organization variables with the
+  same repository selection. Each project keeps a distinct backend key. Repository or environment secrets with the same
+  names can override these for projects that need separate credentials.
+- **Provider tokens follow the resources they manage.** Use `TF_GITHUB_TOKEN` and `TF_GITHUB_READ_TOKEN` for GitHub, and
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_READ_API_TOKEN` for Cloudflare. Share only tokens whose permissions cover the
+  selected projects; keep credentials for another owner or account separate. State keys grant access to the state
+  bucket, not to Cloudflare's resource-management API. Never copy a developer's CLI login into these secrets.
+- **Organization secrets are available only inside that organization.** A repository under a personal account needs
+  repository secrets with these same names. GitHub Free organizations cannot provide organization secrets to private
+  repositories. Environment protection for private repositories also requires a paid plan.
+- **Organization secrets are not restricted to an environment.** Selected repositories' workflows can read them, so
+  share write credentials only with repositories whose contributors and workflows are trusted with them. Keep write
+  secrets in environment storage instead when environment-only access is required. Never pass write credentials to pull
+  request plans or use `secrets: inherit`; forward only the provider credentials that a project needs.
 
 | Secret                       | When it's needed                                                                               |
 | ---------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -536,15 +550,20 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_READ_API_TOKEN }}
       TF_GITHUB_TOKEN: ${{ secrets.TF_GITHUB_READ_TOKEN }}
 
-  # The infrastructure environment holds the write credentials, kept to main by its branch rules.
+  # Configure infrastructure to allow only main. Environment secrets override these forwarded organization/repo secrets.
   apply:
     if: github.event_name == 'push'
     uses: betterapps-hq/pipelines/.github/workflows/terraform-apply.yml@<commit sha> # <version>
     with:
       environment: infrastructure
       working-directory: infra
-      state-bucket: parity-terraform-state
-      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+      state-bucket: ${{ vars.TF_STATE_BUCKET }}
+      state-endpoint: ${{ vars.TF_STATE_ENDPOINT }}
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+      TF_STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_GITHUB_TOKEN: ${{ secrets.TF_GITHUB_TOKEN }}
 ```
 
 The plan isn't a required check: the workflow runs only when a project changes, and a required check that never reports
