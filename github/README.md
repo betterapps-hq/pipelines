@@ -55,7 +55,7 @@ jobs:
     permissions:
       contents: write
       actions: read
-    uses: betterapps-hq/pipelines/.github/workflows/cd-desktop-release.yml@<commit sha> # <version>
+    uses: betterapps-hq/pipelines/.github/workflows/cd-desktop-release.yml@c2e002c29b8f1d8eee612805e9aa715c61dcb7e4 # v1.11.0
     with:
       build-secret-env: VITE_TLDRAW_LICENSE_KEY
     secrets:
@@ -64,7 +64,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'promote'
     permissions:
       contents: write
-    uses: betterapps-hq/pipelines/.github/workflows/cd-desktop-promote.yml@<commit sha> # <version>
+    uses: betterapps-hq/pipelines/.github/workflows/cd-desktop-promote.yml@c2e002c29b8f1d8eee612805e9aa715c61dcb7e4 # v1.11.0
     with:
       version: ${{ inputs.version }}
       environment: production
