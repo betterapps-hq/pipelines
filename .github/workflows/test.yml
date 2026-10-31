@@ -35,8 +35,8 @@ jobs:
         run: |
           script=$(yq '.jobs.apply.steps[] | select(.id == "ready") | .run' .github/workflows/terraform-apply.yml)
           gh() {
-            test "$1" = api
-            test "$2" = repos/example/repository/environments/test%2Froom%20space/variables/TF_APPLY_ENABLED
+            test "$1" = api &&
+              test "$2" = repos/example/repository/environments/test%2Froom%20space/variables/TF_APPLY_ENABLED || return 1
             if [ "$TEST_MARKER" = missing ]; then return 1; fi
             printf '%s\n' "$TEST_MARKER"
           }
