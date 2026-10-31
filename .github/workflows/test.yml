@@ -543,6 +543,28 @@ jobs:
           RESULT: ${{ needs.terraform-apply.outputs.result }}
         run: test "$RESULT" = skipped
 
+  # Forwarded credentials alone must not enable an environment that hasn't been provisioned by an administrator.
+  terraform-apply-unconfigured:
+    name: terraform-apply (forwarded credentials, unconfigured environment)
+    uses: ./.github/workflows/terraform-apply.yml
+    with:
+      environment: terraform-test-unconfigured
+      working-directory: terraform/github-repository-rules/examples/basic
+      state-bucket: example-terraform-state
+      state-endpoint: https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: test-key-never-used
+      TF_STATE_SECRET_ACCESS_KEY: test-secret-never-used
+
+  terraform-apply-unconfigured-skipped:
+    name: Check unconfigured terraform-apply skipped
+    needs: terraform-apply-unconfigured
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULT: ${{ needs.terraform-apply-unconfigured.outputs.result }}
+        run: test "$RESULT" = skipped
+
   # This repository's own formatting and lint, through its own template.
   verify:
     name: verify (this repository)
@@ -580,6 +602,8 @@ jobs:
       - terraform-plan-skipped
       - terraform-apply
       - terraform-apply-skipped
+      - terraform-apply-unconfigured
+      - terraform-apply-unconfigured-skipped
       - verify
     runs-on: ubuntu-latest
     steps:

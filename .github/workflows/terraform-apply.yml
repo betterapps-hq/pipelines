@@ -3,8 +3,8 @@ name: Terraform apply
 # Applies a Terraform project in the GitHub environment the caller names, such as from main after a merge: it plans
 # against the state in R2 and applies that plan. Credentials can come from the environment or be passed by the caller.
 # The environment's branch rules decide what can apply, and its required reviewers approve before anything runs.
-# Until credentials are available,
-# the apply skips with a notice. github/README.md shows a caller.
+# Until credentials and the environment's TF_APPLY_ENABLED secret are available, the apply skips with a notice.
+# github/README.md shows a caller.
 on:
   workflow_call:
     inputs:
@@ -54,7 +54,7 @@ on:
         required: false
     outputs:
       result:
-        description: applied, no-changes, or skipped when no state credentials are available.
+        description: applied, no-changes, or skipped when credentials or environment approval are absent.
         value: ${{ jobs.apply.outputs.result }}
 
 permissions:
@@ -89,9 +89,14 @@ jobs:
         working-directory: .
         env:
           HAS_STATE_CREDENTIALS: ${{ secrets.TF_STATE_ACCESS_KEY_ID != '' && secrets.TF_STATE_SECRET_ACCESS_KEY != '' }}
+          APPLY_ENABLED: ${{ secrets.TF_APPLY_ENABLED == 'true' }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          if [ "$HAS_STATE_CREDENTIALS" = true ]; then
+          if [ "$APPLY_ENABLED" != true ]; then
+            echo "::notice::Skipped: configure the $ENVIRONMENT environment's protection and set its TF_APPLY_ENABLED secret to true before applying."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "result=skipped" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_STATE_CREDENTIALS" = true ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::Skipped: no TF_STATE_ACCESS_KEY_ID and TF_STATE_SECRET_ACCESS_KEY are available for $ENVIRONMENT, so nothing was applied."
