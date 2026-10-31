@@ -462,7 +462,7 @@ jobs:
           gh() {
             case "$1 $2" in
               "api repos/example/repository/releases/tags/v1.0.0") printf '{"draft":false,"prerelease":%s}\n' "$TEST_PRERELEASE" ;;
-              "api repos/example/repository/commits/v1.0.0") echo "$TEST_COMMIT" ;;
+              "api repos/example/repository/git/ref/tags/v1.0.0") echo "commit $TEST_COMMIT" ;;
               "api repos/example/repository/releases/latest") printf '{"tag_name":"v%s"}\n' "$TEST_LATEST" ;;
               "release download") cp -R "$TEST_FIXTURE" installers ;;
               "release edit") printf '%s\n' "$*" >> "$TEST_EDITS" ;;
@@ -490,6 +490,40 @@ jobs:
           export TEST_PRERELEASE=true GITHUB_REF=refs/heads/feature
           if run_case; then echo "A feature branch unexpectedly promoted"; exit 1; fi
           test "$(wc -l < "$TEST_EDITS")" = 1
+
+      - name: Check a missing tag creates a draft and a conflicting tag fails
+        shell: bash
+        run: |
+          script=$(yq '.jobs.publish.steps[] | select(.id == "publish") | .run' .github/workflows/cd-desktop-release.yml)
+          base=$(mktemp -d)
+          export TEST_EDITS="$base/edits" COMMIT=1111111111111111111111111111111111111111
+          export VERSION=1.0.0 APP_DIRECTORY=app GITHUB_REPOSITORY=example/repository GH_TOKEN=unused TEST_TAG=missing
+          gh() {
+            case "$1 $2" in
+              "api repos/example/repository/git/ref/tags/v1.0.0")
+                if [ "$TEST_TAG" = missing ]; then echo 'gh: Not Found (HTTP 404)' >&2; return 1; fi
+                echo 'commit 2222222222222222222222222222222222222222' ;;
+              "release view") return 1 ;;
+              "release create" | "release upload" | "release edit") printf '%s\n' "$*" >> "$TEST_EDITS" ;;
+              *) echo "Unexpected gh call" >&2; return 1 ;;
+            esac
+          }
+          export -f gh
+          run_case() {
+            local work
+            work=$(mktemp -d)
+            mkdir -p "$work/source/app" "$work/installers"
+            printf notes > "$work/source/app/CHANGELOG.md"
+            printf fixture > "$work/installers/Example-1.0.0.exe"
+            export GITHUB_OUTPUT="$work/output"
+            (cd "$work" && bash -e -o pipefail -c "$script")
+          }
+          run_case
+          grep -q '^release create v1.0.0 ' "$TEST_EDITS"
+          test "$(wc -l < "$TEST_EDITS")" = 3
+          export TEST_TAG=conflicting
+          if run_case; then echo "A conflicting tag unexpectedly published"; exit 1; fi
+          test "$(wc -l < "$TEST_EDITS")" = 3
 
   release-checked:
     name: Check the release dry runs

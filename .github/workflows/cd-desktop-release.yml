@@ -179,18 +179,33 @@ jobs:
         run: |
           echo "::notice::Unsigned packaging; signing is configured separately."
           bash -e -o pipefail -c "$PACKAGE_COMMAND"
+      - id: artifacts
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          APP_DIRECTORY: ${{ inputs.app-directory }}
+          ARTIFACT_DIRECTORY: ${{ inputs.artifact-directory }}
+        run: |
+          node --input-type=module <<'NODE'
+          import {appendFileSync} from "node:fs"
+          import {resolve, relative, isAbsolute} from "node:path"
+          const root = resolve(process.env.GITHUB_WORKSPACE)
+          const directory = resolve(root, process.env.WORKING_DIRECTORY, process.env.APP_DIRECTORY, process.env.ARTIFACT_DIRECTORY)
+          const within = relative(root, directory)
+          if (within.startsWith("..") || isAbsolute(within) || /[\r\n]/.test(directory)) throw new Error("Artifacts must stay in the workspace")
+          appendFileSync(process.env.GITHUB_OUTPUT, `directory=${directory.replaceAll("\\", "/")}\n`)
+          NODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-${{ matrix.os }}
           if-no-files-found: error
           compression-level: 0
           path: |
-            ${{ inputs.working-directory }}/${{ inputs.app-directory }}/${{ inputs.artifact-directory }}/*.exe
-            ${{ inputs.working-directory }}/${{ inputs.app-directory }}/${{ inputs.artifact-directory }}/*.dmg
-            ${{ inputs.working-directory }}/${{ inputs.app-directory }}/${{ inputs.artifact-directory }}/*.AppImage
-            ${{ inputs.working-directory }}/${{ inputs.app-directory }}/${{ inputs.artifact-directory }}/*.zip
-            ${{ inputs.working-directory }}/${{ inputs.app-directory }}/${{ inputs.artifact-directory }}/*.blockmap
-            ${{ inputs.working-directory }}/${{ inputs.app-directory }}/${{ inputs.artifact-directory }}/latest*.yml
+            ${{ steps.artifacts.outputs.directory }}/*.exe
+            ${{ steps.artifacts.outputs.directory }}/*.dmg
+            ${{ steps.artifacts.outputs.directory }}/*.AppImage
+            ${{ steps.artifacts.outputs.directory }}/*.zip
+            ${{ steps.artifacts.outputs.directory }}/*.blockmap
+            ${{ steps.artifacts.outputs.directory }}/latest*.yml
 
   publish:
     needs: [select, build]
@@ -221,7 +236,9 @@ jobs:
           const files = readdirSync("installers").sort()
           if (!files.some(name => /\.(exe|dmg|AppImage)$/.test(name))) throw new Error("No installer artifacts")
           const assets = files.map(name => {
-            if (!/^[A-Za-z0-9][A-Za-z0-9._ -]*$/.test(name)) throw new Error("Unsafe asset name")
+            if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(name)) {
+              throw new Error(`GitHub would rename ${name}; configure an artifactName without spaces or repeated dots`)
+            }
             return {name, sha256:createHash("sha256").update(readFileSync(`installers/${name}`)).digest("hex")}
           })
           writeFileSync("installers/desktop-release.json", JSON.stringify({schema:1, version:process.env.VERSION, commit:process.env.COMMIT, assets}, null, 2))
@@ -245,8 +262,8 @@ jobs:
           tag="v$VERSION"
           notes="source/$APP_DIRECTORY/CHANGELOG.md"
           [ -f "$notes" ] || { echo "No app changelog was found."; exit 1; }
-          if gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha > tag-commit.txt 2> tag-error.txt; then
-            test "$(cat tag-commit.txt)" = "$COMMIT"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '"\(.object.type) \(.object.sha)"' > tag-commit.txt 2> tag-error.txt; then
+            test "$(cat tag-commit.txt)" = "commit $COMMIT"
           elif ! grep -q 'HTTP 404' tag-error.txt; then
             cat tag-error.txt
             exit 1

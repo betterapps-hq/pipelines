@@ -14,7 +14,8 @@ template commit. `working-directory` defaults to `.`, `app-directory` to `apps/d
 `pnpm build`, `package-command` to `pnpm exec electron-builder --publish never` (in the app folder),
 `artifact-directory` to `dist`, and `ci-workflow` to `ci.yml`. `os` is a JSON array, defaulting to all three hosted
 operating systems. `dry-run: true` builds and collects artifacts without creating a tag or release. Outputs are
-`version` and `published`.
+`version` and `published`. Configure an electron-builder `artifactName` without spaces or repeated dots, such as
+`App-${version}-${os}-${arch}.${ext}`: GitHub must preserve names in both update metadata and the release manifest.
 
 An optional named secret `BUILD_SECRET` can supply one build setting; `build-secret-env` names its environment variable.
 For example, Parity forwards its tldraw key and sets the name to `VITE_TLDRAW_LICENSE_KEY`. No signing credentials are

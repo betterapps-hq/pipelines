@@ -46,7 +46,9 @@ jobs:
             exit 0
           fi
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir installers
-          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '"\(.object.type) \(.object.sha)"')
+          read -r kind commit <<< "$ref"
+          [ "$kind" = commit ] || { echo "The release must use its recorded lightweight commit tag."; exit 1; }
           COMMIT="$commit" node --input-type=module <<'NODE'
           import {createHash} from "node:crypto"
           import {readdirSync, readFileSync} from "node:fs"
@@ -59,7 +61,7 @@ jobs:
           }
           const names = []
           for (const {name, sha256} of manifest.assets) {
-            if (typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._ -]*$/.test(name)) throw new Error("Unsafe asset name")
+            if (typeof name !== "string" || !/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(name)) throw new Error("Unsafe asset name")
             if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error("Invalid checksum")
             const actual = createHash("sha256").update(readFileSync(`installers/${name}`)).digest("hex")
             if (actual !== sha256) throw new Error(`Release file changed: ${name}`)
