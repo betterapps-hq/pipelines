@@ -30,6 +30,29 @@ jobs:
       - name: Check Tests pass waits on every job
         run: |
           diff <(yq '.jobs | keys | .[]' .github/workflows/test.yml | grep -vx tests-pass | sort)             <(yq '.jobs["tests-pass"].needs[]' .github/workflows/test.yml | sort)
+      - name: Check Terraform enablement comes from the selected environment
+        shell: bash
+        run: |
+          script=$(yq '.jobs.apply.steps[] | select(.id == "ready") | .run' .github/workflows/terraform-apply.yml)
+          gh() {
+            test "$1" = api &&
+              test "$2" = repos/example/repository/environments/test%2Froom%20space/variables/TF_APPLY_ENABLED || return 1
+            if [ "$TEST_MARKER" = missing ]; then return 1; fi
+            printf '%s\n' "$TEST_MARKER"
+          }
+          run_gate() { eval "$script"; }
+          for marker in true false missing; do
+            output=$(mktemp)
+            # Simulate a broader scope enabling applies; only the environment API result may enable this job.
+            TEST_MARKER="$marker" HAS_STATE_CREDENTIALS=true GH_TOKEN=unused APPLY_ENABLED=true ENVIRONMENT='test/room space' \
+              GITHUB_REPOSITORY=example/repository GITHUB_OUTPUT="$output" run_gate
+            if [ "$marker" = true ]; then
+              grep -qx 'ready=true' "$output"
+            else
+              grep -qx 'result=skipped' "$output"
+            fi
+            rm "$output"
+          done
 
   setup:
     name: setup (${{ matrix.example }}, ${{ matrix.os }})
@@ -543,6 +566,28 @@ jobs:
           RESULT: ${{ needs.terraform-apply.outputs.result }}
         run: test "$RESULT" = skipped
 
+  # Forwarded credentials alone must not enable an environment that hasn't been provisioned by an administrator.
+  terraform-apply-unconfigured:
+    name: terraform-apply (forwarded credentials, unconfigured environment)
+    uses: ./.github/workflows/terraform-apply.yml
+    with:
+      environment: terraform-test-unconfigured
+      working-directory: terraform/github-repository-rules/examples/basic
+      state-bucket: example-terraform-state
+      state-endpoint: https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: test-key-never-used
+      TF_STATE_SECRET_ACCESS_KEY: test-secret-never-used
+
+  terraform-apply-unconfigured-skipped:
+    name: Check unconfigured terraform-apply skipped
+    needs: terraform-apply-unconfigured
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULT: ${{ needs.terraform-apply-unconfigured.outputs.result }}
+        run: test "$RESULT" = skipped
+
   # This repository's own formatting and lint, through its own template.
   verify:
     name: verify (this repository)
@@ -580,6 +625,8 @@ jobs:
       - terraform-plan-skipped
       - terraform-apply
       - terraform-apply-skipped
+      - terraform-apply-unconfigured
+      - terraform-apply-unconfigured-skipped
       - verify
     runs-on: ubuntu-latest
     steps:

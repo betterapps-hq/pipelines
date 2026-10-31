@@ -487,18 +487,40 @@ A project they run has:
   read what the project manages. Plans don't take the state lock, so read-only state credentials are enough. Some things
   only show to a token that can write them, such as a ruleset's bypass actors, and a project that manages those needs
   that token for its plans too.
-- **`terraform-apply` takes the environment's own secrets,** by the same names, and nothing from the caller. Branch
-  rules on the environment can keep those write credentials to `main`, and required reviewers can approve each apply.
-- **Required reviewers need a public repository or a paid plan.** A private repository on GitHub Free has environments,
-  their secrets and branch rules, as Copacker's does, but its applies run without waiting for anyone.
+- **`terraform-apply` accepts named secrets from the caller or the environment.** Environment secrets with matching
+  names take precedence. Organization/repository secrets must be forwarded explicitly. The job still waits for the named
+  environment's branch rules and required reviewers. An administrator must configure those rules first, then set the
+  environment variable `TF_APPLY_ENABLED` to `true`. Do not define that marker at organization or repository level or
+  forward it from a caller: an automatically created environment must not enable an apply. The workflow reads the marker
+  through the selected environment's API, rather than the merged `vars` context. It uses `TF_GITHUB_TOKEN`, which needs
+  Environments read even when the project does not use the GitHub provider. The job's `GITHUB_TOKEN` cannot grant that
+  permission. If the token is missing, the lookup is unavailable or the marker is absent, nothing applies.
+- **Organization secrets use selected-repository access.** Keep a shared R2 state bucket's write keys as
+  `TF_STATE_ACCESS_KEY_ID` and `TF_STATE_SECRET_ACCESS_KEY`, and its read-only keys as `TF_STATE_READ_ACCESS_KEY_ID` and
+  `TF_STATE_READ_SECRET_ACCESS_KEY`. Set `TF_STATE_BUCKET` and `TF_STATE_ENDPOINT` as organization variables with the
+  same repository selection. Each project keeps a distinct backend key. Repository or environment secrets with the same
+  names can override these for projects that need separate credentials.
+- **Provider tokens follow the resources they manage.** Use `TF_GITHUB_TOKEN` and `TF_GITHUB_READ_TOKEN` for GitHub, and
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_READ_API_TOKEN` for Cloudflare. Share only tokens whose permissions cover the
+  selected projects; keep credentials for another owner or account separate. State keys grant access to the state
+  bucket, not to Cloudflare's resource-management API. Never copy a developer's CLI login into these secrets.
+- **Organization secrets are available only inside that organization.** A repository under a personal account needs
+  repository secrets with these same names. GitHub Free organizations cannot provide organization secrets to private
+  repositories. Environment protection for private repositories also requires a paid plan. Required reviewers are
+  available for public repositories on Free, Pro and Team; private repositories need Enterprise for that approval gate,
+  even though Pro/Team support other environment features.
+- **Organization secrets are not restricted to an environment.** Selected repositories' workflows can read them, so
+  share write credentials only with repositories whose contributors and workflows are trusted with them. Keep write
+  secrets in environment storage instead when environment-only access is required. Never pass write credentials to pull
+  request plans or use `secrets: inherit`; forward only the provider credentials that a project needs.
 
-| Secret                       | When it's needed                                                                               |
-| ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| `TF_STATE_ACCESS_KEY_ID`     | Always: an R2 access key for the state bucket. Without it and its secret, planning is skipped. |
-| `TF_STATE_SECRET_ACCESS_KEY` | Always: that key's secret.                                                                     |
-| `CLOUDFLARE_API_TOKEN`       | When the project uses the cloudflare provider.                                                 |
-| `TF_GITHUB_TOKEN`            | When it uses the github provider, which reads it as `GITHUB_TOKEN`.                            |
-| `NEON_API_KEY`               | When it uses the neon provider.                                                                |
+| Secret                       | When it's needed                                                                                            |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `TF_STATE_ACCESS_KEY_ID`     | Always: an R2 access key for the state bucket. Without it and its secret, planning is skipped.              |
+| `TF_STATE_SECRET_ACCESS_KEY` | Always: that key's secret.                                                                                  |
+| `CLOUDFLARE_API_TOKEN`       | When the project uses the cloudflare provider.                                                              |
+| `TF_GITHUB_TOKEN`            | Applies: Environments read for readiness, plus provider permissions. Plans: when using the github provider. |
+| `NEON_API_KEY`               | When it uses the neon provider.                                                                             |
 
 GitHub doesn't let a secret's name start with `GITHUB_`, so the github provider's token is `TF_GITHUB_TOKEN`. A project
 that needs another provider's credential gets it added here, by name, in a release.
@@ -527,8 +549,8 @@ jobs:
     uses: betterapps-hq/pipelines/.github/workflows/terraform-plan.yml@<commit sha> # <version>
     with:
       working-directory: infra
-      state-bucket: parity-terraform-state
-      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+      state-bucket: ${{ vars.TF_STATE_BUCKET }}
+      state-endpoint: ${{ vars.TF_STATE_ENDPOINT }}
     # Read-only credentials, since any branch's pull request plans with them.
     secrets:
       TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_READ_ACCESS_KEY_ID }}
@@ -536,15 +558,20 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_READ_API_TOKEN }}
       TF_GITHUB_TOKEN: ${{ secrets.TF_GITHUB_READ_TOKEN }}
 
-  # The infrastructure environment holds the write credentials, kept to main by its branch rules.
+  # Configure infrastructure to allow only main. Environment secrets override these forwarded organization/repo secrets.
   apply:
     if: github.event_name == 'push'
     uses: betterapps-hq/pipelines/.github/workflows/terraform-apply.yml@<commit sha> # <version>
     with:
       environment: infrastructure
       working-directory: infra
-      state-bucket: parity-terraform-state
-      state-endpoint: https://<account id>.r2.cloudflarestorage.com
+      state-bucket: ${{ vars.TF_STATE_BUCKET }}
+      state-endpoint: ${{ vars.TF_STATE_ENDPOINT }}
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+      TF_STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_GITHUB_TOKEN: ${{ secrets.TF_GITHUB_TOKEN }}
 ```
 
 The plan isn't a required check: the workflow runs only when a project changes, and a required check that never reports
@@ -582,6 +609,11 @@ jobs:
       working-directory: apps/copacker/infra/staging
       state-bucket: copacker-terraform-state
       state-endpoint: https://<account id>.r2.cloudflarestorage.com
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+      TF_STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_GITHUB_TOKEN: ${{ secrets.TF_GITHUB_TOKEN }}
 
   production:
     needs: staging
@@ -591,6 +623,11 @@ jobs:
       working-directory: apps/copacker/infra/production
       state-bucket: copacker-terraform-state
       state-endpoint: https://<account id>.r2.cloudflarestorage.com
+    secrets:
+      TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+      TF_STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_GITHUB_TOKEN: ${{ secrets.TF_GITHUB_TOKEN }}
 ```
 
 ## terraform-plan
@@ -636,8 +673,9 @@ the run's summary, as addresses and actions.
 
 - **It applies a fresh plan,** not the one the pull request showed. That one was made from the pull request's branch,
   and `main` may have moved since. Terraform refuses to apply a plan if the state changes after it's made.
-- **Its credentials are the environment's secrets,** by the names in [the table above](#where-credentials-come-from).
-  Until the environment has the state credentials, the apply skips with a notice.
+- **Its credentials come from named caller secrets or the environment,** by the names in
+  [the table above](#where-credentials-come-from). Environment secrets take precedence. Until state credentials are
+  available and the environment's `TF_APPLY_ENABLED` variable is `true`, the apply skips with a notice.
 - **Required reviewers on the environment approve before the job starts,** on the strength of the plan the pull request
   showed, where the repository's plan has them.
 - **Applies to one project run one at a time.** A newer push replaces one still waiting, so the last push's
@@ -645,7 +683,7 @@ the run's summary, as addresses and actions.
 
 | Input               | Default    | What it's for                                                             |
 | ------------------- | ---------- | ------------------------------------------------------------------------- |
-| `environment`       | (required) | The GitHub environment that holds the credentials and gates the apply.    |
+| `environment`       | (required) | The provisioned GitHub environment that gates the apply.                  |
 | `working-directory` | (required) | The Terraform project's directory, relative to the repository's root.     |
 | `state-bucket`      | (required) | The R2 bucket the state is in.                                            |
 | `state-endpoint`    | (required) | R2's S3 endpoint for the bucket's account.                                |
@@ -653,9 +691,11 @@ the run's summary, as addresses and actions.
 | `terraform-version` | `1.16.6`   | The Terraform to run.                                                     |
 | `show-plan`         | `true`     | Print the plan, and what the apply did, in the run's log.                 |
 
-Secrets: none passed; it reads the environment's own.
+Secrets: the optional named credentials in [the table above](#where-credentials-come-from), with environment overrides.
+The `TF_APPLY_ENABLED` marker belongs only in the selected environment and is not a caller input.
 
-Output: `result`, which is `applied`, `no-changes`, or `skipped` when the environment had no state credentials.
+Output: `result`, which is `applied`, `no-changes`, or `skipped` when state credentials or the environment enablement
+marker are absent.
 
 Permissions: `contents: read`.
 
