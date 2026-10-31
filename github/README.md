@@ -490,7 +490,7 @@ A project they run has:
 - **`terraform-apply` accepts named secrets from the caller or the environment.** Environment secrets with matching
   names take precedence. Organization/repository secrets must be forwarded explicitly. The job still waits for the named
   environment's branch rules and required reviewers. An administrator must configure those rules first, then set the
-  environment secret `TF_APPLY_ENABLED` to `true`. Do not define that marker at organization or repository level or
+  environment variable `TF_APPLY_ENABLED` to `true`. Do not define that marker at organization or repository level or
   forward it from a caller: an automatically created environment must not enable an apply.
 - **Organization secrets use selected-repository access.** Keep a shared R2 state bucket's write keys as
   `TF_STATE_ACCESS_KEY_ID` and `TF_STATE_SECRET_ACCESS_KEY`, and its read-only keys as `TF_STATE_READ_ACCESS_KEY_ID` and
@@ -670,7 +670,7 @@ the run's summary, as addresses and actions.
   and `main` may have moved since. Terraform refuses to apply a plan if the state changes after it's made.
 - **Its credentials come from named caller secrets or the environment,** by the names in
   [the table above](#where-credentials-come-from). Environment secrets take precedence. Until state credentials are
-  available and the environment's `TF_APPLY_ENABLED` secret is `true`, the apply skips with a notice.
+  available and the environment's `TF_APPLY_ENABLED` variable is `true`, the apply skips with a notice.
 - **Required reviewers on the environment approve before the job starts,** on the strength of the plan the pull request
   showed, where the repository's plan has them.
 - **Applies to one project run one at a time.** A newer push replaces one still waiting, so the last push's
@@ -687,7 +687,7 @@ the run's summary, as addresses and actions.
 | `show-plan`         | `true`     | Print the plan, and what the apply did, in the run's log.                 |
 
 Secrets: the optional named credentials in [the table above](#where-credentials-come-from), with environment overrides.
-The `TF_APPLY_ENABLED` marker belongs only in the selected environment and is not a caller secret.
+The `TF_APPLY_ENABLED` marker belongs only in the selected environment and is not a caller input.
 
 Output: `result`, which is `applied`, `no-changes`, or `skipped` when state credentials or environment approval are
 absent.
