@@ -89,11 +89,18 @@ jobs:
         working-directory: .
         env:
           HAS_STATE_CREDENTIALS: ${{ secrets.TF_STATE_ACCESS_KEY_ID != '' && secrets.TF_STATE_SECRET_ACCESS_KEY != '' }}
-          APPLY_ENABLED: ${{ vars.TF_APPLY_ENABLED == 'true' }}
+          GH_TOKEN: ${{ secrets.TF_GITHUB_TOKEN || github.token }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
+          # The merged vars context also includes organization/repository values. Read the selected environment
+          # directly, so a marker at either of those broader scopes cannot enable an unconfigured environment.
+          APPLY_ENABLED=
+          if [ "$HAS_STATE_CREDENTIALS" = true ]; then
+            encoded=$(jq -rn --arg name "$ENVIRONMENT" '$name | @uri')
+            APPLY_ENABLED=$(gh api "repos/$GITHUB_REPOSITORY/environments/$encoded/variables/TF_APPLY_ENABLED" --jq '.value' 2>/dev/null) || APPLY_ENABLED=
+          fi
           if [ "$APPLY_ENABLED" != true ]; then
-            echo "::notice::Skipped: configure the $ENVIRONMENT environment's protection and set its TF_APPLY_ENABLED variable to true before applying."
+            echo "::notice::Skipped: configure the $ENVIRONMENT environment's protection, set its TF_APPLY_ENABLED variable to true, and grant the GitHub token Environments read access before applying."
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "result=skipped" >> "$GITHUB_OUTPUT"
           elif [ "$HAS_STATE_CREDENTIALS" = true ]; then

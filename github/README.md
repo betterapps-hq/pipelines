@@ -491,7 +491,10 @@ A project they run has:
   names take precedence. Organization/repository secrets must be forwarded explicitly. The job still waits for the named
   environment's branch rules and required reviewers. An administrator must configure those rules first, then set the
   environment variable `TF_APPLY_ENABLED` to `true`. Do not define that marker at organization or repository level or
-  forward it from a caller: an automatically created environment must not enable an apply.
+  forward it from a caller: an automatically created environment must not enable an apply. The workflow reads the marker
+  through the selected environment's API, rather than the merged `vars` context. It uses `TF_GITHUB_TOKEN`, or the job's
+  `GITHUB_TOKEN` when no provider token is passed; that token needs Environments read access. If the lookup is
+  unavailable or the marker is absent, nothing applies.
 - **Organization secrets use selected-repository access.** Keep a shared R2 state bucket's write keys as
   `TF_STATE_ACCESS_KEY_ID` and `TF_STATE_SECRET_ACCESS_KEY`, and its read-only keys as `TF_STATE_READ_ACCESS_KEY_ID` and
   `TF_STATE_READ_SECRET_ACCESS_KEY`. Set `TF_STATE_BUCKET` and `TF_STATE_ENDPOINT` as organization variables with the
