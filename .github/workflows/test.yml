@@ -406,6 +406,29 @@ jobs:
         run: |
           test "$VERSION" = 1.0.0
           test "$PUBLISHED" = false
+      - name: Reject missing installers and duplicate platform filenames
+        shell: bash
+        run: |
+          workflow="$GITHUB_WORKSPACE/.github/workflows/cd-desktop-release.yml"
+          validate=$(yq '.jobs.build.steps[] | select(.id == "artifacts") | .run' "$workflow")
+          collect=$(yq '.jobs.publish.steps[] | select(.id == "collect") | .run' "$workflow")
+          work=$(mktemp -d)
+          cd "$work"
+          export GITHUB_WORKSPACE="$work" WORKING_DIRECTORY=. APP_DIRECTORY=. ARTIFACT_DIRECTORY=dist
+          export GITHUB_OUTPUT="$work/output" RUNNER_PLATFORM=Windows
+          mkdir dist
+          touch dist/App.zip dist/latest.yml
+          if bash -e -c "$validate"; then echo "Accepted a missing Windows installer"; exit 1; fi
+          touch dist/App.exe
+          bash -e -c "$validate"
+          mkdir -p platform-artifacts/windows platform-artifacts/macos
+          touch platform-artifacts/windows/App.zip platform-artifacts/macos/App.zip
+          if bash -e -c "$collect"; then echo "Accepted duplicate assets"; exit 1; fi
+          test ! -e installers
+          mv platform-artifacts/macos/App.zip platform-artifacts/macos/App-mac.zip
+          bash -e -c "$collect"
+          test -f installers/App.zip
+          test -f installers/App-mac.zip
       - name: Check desktop release accepts only successful CI pushes or checked manual retries
         shell: bash
         run: |
