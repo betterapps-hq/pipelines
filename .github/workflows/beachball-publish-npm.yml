@@ -214,3 +214,39 @@ jobs:
             echo
             jq -r '.[] | "- `\(.name)` \(.from) to \(.to)"' <<< "$packages"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Beachball updates the lockfile as it bumps, before publishing, so a workspace package that another depends on by
+      # an npm range rather than workspace: can't resolve yet and Beachball only warns. Once the versions are on npm,
+      # the lockfile is updated on top of the release commit and pushed with the same key. A new version can take a
+      # minute to reach the registry, so the update retries.
+      - if: steps.release.outputs.published == 'true' && inputs.publish
+        name: Update the lockfile for the published versions
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          pnpm_config_verify_deps_before_run: "false"
+        run: |
+          [ -f pnpm-lock.yaml ] || exit 0
+          git fetch --quiet origin "$DEFAULT_BRANCH"
+          git checkout --quiet --detach "origin/$DEFAULT_BRANCH"
+          updated=false
+          for attempt in 1 2 3 4 5 6; do
+            if pnpm install --lockfile-only --ignore-scripts; then
+              updated=true
+              break
+            fi
+            sleep 20
+          done
+          if [ "$updated" != true ]; then
+            echo "::warning::pnpm couldn't update pnpm-lock.yaml for the published versions; run pnpm install and commit it."
+            exit 0
+          fi
+          if git diff --quiet -- pnpm-lock.yaml; then
+            exit 0
+          fi
+          git add pnpm-lock.yaml
+          git commit --quiet --message "chore(release): update the lockfile"
+          if git push --quiet origin "HEAD:$DEFAULT_BRANCH"; then
+            echo "Updated pnpm-lock.yaml for the published versions." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::$DEFAULT_BRANCH moved on before the lockfile update could be pushed; run pnpm install and commit it."
+          fi
