@@ -1209,6 +1209,9 @@ finds no change files and releases nothing.
 - **What npm needs** is as for `cd-npm-publish`: each package's trusted publisher names the caller's workflow file and
   the environment, a first version published by hand, and a `repository.url` that matches the repository. Beachball
   turns `workspace:` and `catalog:` ranges into versions as it publishes.
+- **The lockfile follows the release.** Beachball updates `pnpm-lock.yaml` before it publishes, which fails for a
+  package another depends on by an npm range rather than `workspace:`, since the new version isn't on npm yet. After
+  publishing, the job updates the lockfile again, retrying while npm catches up, and pushes it as a second commit.
 - **A dry run** bumps in the runner's checkout and reports the versions, on any branch, without the environment.
 
 | Input               | Default                                   | What it's for                                                      |
